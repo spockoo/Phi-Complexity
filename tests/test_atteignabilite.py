@@ -242,18 +242,27 @@ class TestMesureIntegration:
 
 
 class TestValidationSolidite:
+    def _cand(self, **kw):
+        base = {"declaration": "c", "module": "C",
+                "lieurs": ["(s : Sol)"],
+                "groupes_complets": ["(s : Sol)"],
+                "univers": [], "variables": [], "opens": []}
+        base.update(kw)
+        return base
+
     def test_fichier_minimal(self):
         contenu = fichier_validation_solidite(
-            "but", "S", ["(s : Sol)"], "Nat → Nat", "s",
+            "but", "S", self._cand(), {}, "Nat → Nat", "s",
             opens_sorry=[], raison="têtes incompatibles")
         assert "import S" in contenu
+        assert "import C" in contenu
         assert "example (s : Sol) : Nat → Nat := s" in contenu
         assert "sorry" not in contenu
 
     def test_fichier_rejoue_opens(self):
         contenu = fichier_validation_solidite(
-            "but", "S", ["(s : Sol)"], "Nat", "s", opens_sorry=["open Foo"],
-            raison="x")
+            "but", "S", self._cand(), {}, "Nat", "s",
+            opens_sorry=["open Foo"], raison="x")
         assert "open Foo" in contenu
 
     def test_interpreter_violation(self):

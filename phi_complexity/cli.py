@@ -969,8 +969,6 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         # au registre des IMPOSSIBLE_VALIDÉ → élagage réel aux prochains runs.
         timeout = getattr(args, "timeout", 600)
         garder = getattr(args, "garder", False)
-        groupes, _noms, _conclusion = analyser_entete(
-            res["enonce_sorry"], args.sorry)
         bilan = {"confirmes": 0, "violations": [], "inconclusifs": [],
                  "inscrits_registre": 0}
         for i, c in enumerate(res["candidats"]):
@@ -989,8 +987,13 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                     break
                 k += 1
             for j, p in enumerate(echantillon):
+                # B8/B9/B10/B11 : le test lie l'union des télescopes
+                # (candidat + sorry) et importe le module du candidat —
+                # le type du trou vit dans le contexte du candidat, le
+                # pool de termes inclut les lieurs du sorry.
                 contenu = fichier_validation_solidite(
-                    args.sorry, res["module_sorry"], groupes,
+                    args.sorry, res["module_sorry"], c,
+                    res.get("contexte_sorry") or {},
                     p["type_trou"], p["terme"],
                     opens_sorry=res.get("opens_sorry"), raison=p["raison"])
                 chemin_v = os.path.join(
