@@ -198,7 +198,7 @@ class TestDirectionsTrou:
         defs = _defs_corps(dossier_atteignabilite)
         directions, _ = classifier_directions_trou(
             "Nat → Nat", [("s", "Sol")], structs, defs, {})
-        par_terme = {t: z for t, z, _ in directions}
+        par_terme = {t: z for t, _, z, _ in directions}
         assert par_terme["s.u"] == "ATTEIGNABLE"
         assert par_terme["s"] == "CANDIDAT_IMPOSSIBLE"
         assert par_terme["s.mom"] == "CANDIDAT_IMPOSSIBLE"
@@ -210,7 +210,7 @@ class TestDirectionsTrou:
         defs = _defs_corps(dossier_atteignabilite)
         directions, comptes = classifier_directions_trou(
             "u 0 = 0", [("s", "Sol")], structs, defs, {"u": "s.u"})
-        par_terme = {t: z for t, z, _ in directions}
+        par_terme = {t: z for t, _, z, _ in directions}
         assert par_terme["s.mom"] == "ATTEIGNABLE"
         assert comptes["ATTEIGNABLE"] == 1
 

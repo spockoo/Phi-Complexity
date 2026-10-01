@@ -111,6 +111,11 @@ class Candidat:
     #: (`--valider-solidite`). Chacune doit être RÉFUTÉE par Lean pour
     #: devenir IMPOSSIBLE_VALIDÉ (registre).
     impossibles: list = field(default_factory=list)
+    #: Directions INCONNU : [{"trou", "type_trou", "terme", "type_terme",
+    #: "raison"}] — pour l'encerclement (`--encercler`). L'INCONNU n'est
+    #: jamais fermé au premier contact : chaque direction est sondée sous
+    #: plusieurs angles Lean avant tout verdict (docs/ENCERCLEMENT.md).
+    inconnus: list = field(default_factory=list)
     #: Groupes de lieurs EXPLICITES du candidat (ex. ["(ν : ℝ)", ...]) —
     #: le test de solidité les lie (B8 : le type du trou vit dans le
     #: contexte du candidat, pas dans celui du sorry).
@@ -1357,10 +1362,274 @@ def inscrire_impossible_valide(sorry: str, candidat: str, trou: str,
     }
     reg[_cle_registre(sorry, candidat, trou, type_trou, terme,
                       empreinte)] = fiche
+    _ecriture_atomique_json(chemin, reg, "registre")
+    return fiche
+
+
+# ─────────────────────────────────────────────────────────────
+# Encerclement : cerner les mécanismes sans les fermer au premier
+# contact (docs/ENCERCLEMENT.md)
+# ─────────────────────────────────────────────────────────────
+
+#: Statuts typés d'un dossier de circonscription — jamais de booléen.
+#: ENCERCLE : ≥1 angle Lean décisif (RÉFUTÉ mismatch) → la direction
+#: rejoint le registre des impossibilités (seul Lean promeut).
+#: RESISTANT : encerclement complet, aucun verdict décisif → mécanisme
+#: sensible, escaladé. ATTEIGNABLE_TROUVE : un angle a PROUVÉ le câblage
+#: → piste de preuve réelle, escaladée.
+STATUTS_ENCERCLEMENT = ("ENCERCLE", "RESISTANT", "ATTEIGNABLE_TROUVE")
+
+
+def _deplier_profond(t: str, defs: dict, passes: int = 3) -> str:
+    """Dépliage au-delà de la borne du classifieur (angle d'encerclement).
+
+    Le classifieur s'arrête à `_PROF_DEPLIAGE` et déclare INCONNU quand
+    des définitions dépliables restent ("borne de dépliage atteinte").
+    Ici on force des passes supplémentaires : si les types deviennent
+    équivalents, l'INCONNU cachait un ATTEIGNABLE ; si Lean RÉFUTE le
+    câblage sous forme dépliée, l'impossibilité se précise. Le dépliage
+    étant une égalité définitionnelle, un verdict Lean sur la forme
+    dépliée vaut pour la forme originale.
+    """
+    depl = _deplieur_pour(defs)
+    out = _deplier(t, defs)
+    for _ in range(passes):
+        presents = depl.presents(out)
+        if not presents:
+            break
+        for nom in depl.ordre:
+            if nom in presents:
+                out = depl.motifs[nom].sub(depl.depliables[nom], out)
+        out = _normaliser_type(out)
+    return out
+
+
+def _sous_termes(terme: str) -> list:
+    """Tête et applications partielles d'un terme composé.
+
+    `f x y` → ["f", "f x"] : si le terme complet ne convient pas, sa
+    tête ou une application partielle peut convenir au trou. Découpage
+    syntaxique au premier niveau (profondeur 0) — Lean tranche, une
+    chaîne mal formée donne un angle INCONCLUSIF honnête, jamais un
+    faux verdict.
+    """
+    if terme.startswith("("):
+        return []
+    morceaux, prof, courant = [], 0, ""
+    for c in terme:
+        if c in "([{":
+            prof += 1
+        elif c in ")]}":
+            prof = max(0, prof - 1)
+        if c == " " and prof == 0:
+            if courant:
+                morceaux.append(courant)
+            courant = ""
+        else:
+            courant += c
+    if courant:
+        morceaux.append(courant)
+    if len(morceaux) < 2:
+        return []
+    return [" ".join(morceaux[:k]) for k in range(1, len(morceaux))]
+
+
+def _angles_encerclement(raison: str, type_trou: str, terme: str,
+                         type_terme: str, defs: dict) -> list:
+    """Angles d'encerclement applicables à une direction INCONNU.
+
+    Chaque angle = {"nom", "type_trou", "terme", "justification"} : une
+    variante du câblage à soumettre à Lean. Jamais de verdict statique :
+    l'angle ne fait que proposer, Lean dispose.
+    - DEPLIAGE_PROFOND : déplie au-delà de la borne du classifieur.
+    - COERCION : ascription explicite `((terme : Tterme) : Ttrou)` quand
+      les têtes forment une paire de coercition connue.
+    - SOUS_TERMES : tête et applications partielles du terme composé.
+    """
+    angles = []
+    depl = _deplieur_pour(defs)
+    if ("borne de dépliage" in raison
+            or depl.presents(_deplier(type_trou, defs))
+            or depl.presents(_deplier(type_terme, defs))):
+        angles.append({
+            "nom": "DEPLIAGE_PROFOND",
+            "type_trou": _deplier_profond(type_trou, defs),
+            "terme": terme,
+            "justification": "dépliage au-delà de la borne du classifieur",
+        })
+    htrou, hterme = _tete(_deplier(type_trou, defs)), \
+        _tete(_deplier(type_terme, defs))
+    if frozenset({htrou, hterme}) in _PAIRES_COERCITION:
+        angles.append({
+            "nom": "COERCION",
+            "type_trou": type_trou,
+            "terme": f"(({terme} : {type_terme}) : {type_trou})",
+            "justification": f"coercition explicite {hterme} → {htrou}",
+        })
+    for sous in _sous_termes(terme):
+        angles.append({
+            "nom": "SOUS_TERMES",
+            "type_trou": type_trou,
+            "terme": sous,
+            "justification": f"application partielle de {terme}",
+        })
+    return angles
+
+
+def _chemin_dossiers_encerclement() -> str:
+    return os.path.expanduser("~/.phi/dossiers_encerclement.json")
+
+
+def interpreter_angle_encerclement(v: dict) -> str:
+    """Statut d'un angle d'encerclement : ATTEIGNABLE (PROUVÉ — le
+    câblage marche sous cet angle), DECISIF (RÉFUTÉ par mismatch —
+    l'impossibilité se précise), NON_CONCLUANT (le reste : l'angle
+    n'apprend rien, l'encerclement continue)."""
+    if v["verdict"] == "PROUVÉ":
+        return "ATTEIGNABLE"
+    if v["verdict"] == "RÉFUTÉ" and "mismatch" in v["diagnostic"].lower():
+        return "DECISIF"
+    return "NON_CONCLUANT"
+
+
+def encercler_direction(sorry: str, module_sorry: str, candidat: dict,
+                        contexte_sorry: dict, direction: dict, defs: dict,
+                        empreinte: str, dossier_lean: str,
+                        opens_sorry: list | None = None,
+                        timeout_s: int = 600, max_angles: int = 3,
+                        garder: bool = False, prefixe: str = "Encerclement",
+                        index: tuple = (0, 0)) -> dict | None:
+    """Encercle une direction INCONNU : sondée sous plusieurs angles Lean,
+    jamais fermée au premier contact.
+
+    Rend la fiche du dossier de circonscription (statut typé), ou None
+    si aucun angle n'est applicable (l'instrument avoue ne pas savoir
+    sonder cette direction — pas de dossier vide).
+    - un angle PROUVÉ → ATTEIGNABLE_TROUVE : piste de preuve réelle,
+      escaladée (jamais inscrite au registre des impossibilités) ;
+    - ≥1 angle DECISIF (RÉFUTÉ mismatch, forme dépliée définitionnellement
+      égale à l'originale) → ENCERCLE : Lean a tranché, la direction est
+      inscrite au registre (fiche : angle décisif nommé) ;
+    - sinon → RESISTANT : mécanisme sensible, escaladé.
+    """
+    angles = _angles_encerclement(
+        direction["raison"], direction["type_trou"], direction["terme"],
+        direction.get("type_terme") or "", defs)[:max_angles]
+    if not angles:
+        return None
+    fiches_angles, decisifs = [], []
+    for k, angle in enumerate(angles):
+        contenu = fichier_encerclement(
+            sorry, module_sorry, candidat, contexte_sorry, angle,
+            opens_sorry=opens_sorry, raison=direction["raison"])
+        nom_fichier = (f"{prefixe}_{sorry}_{index[0]}_{index[1]}_"
+                       f"{angle['nom']}.lean")
+        chemin_v = os.path.join(dossier_lean, nom_fichier)
+        try:
+            with open(chemin_v, "w", encoding="utf-8") as fh:
+                fh.write(contenu)
+            v = verdict_lean(chemin_v, dossier_lean, timeout_s=timeout_s)
+        finally:
+            if not garder:
+                try:
+                    os.remove(chemin_v)
+                except OSError:
+                    pass
+        statut_angle = interpreter_angle_encerclement(v)
+        fiche_angle = {"angle": angle["nom"],
+                       "justification": angle["justification"],
+                       "verdict": v["verdict"],
+                       "statut_angle": statut_angle}
+        if garder:
+            fiche_angle["fichier"] = chemin_v
+        else:
+            fiche_angle["fichier"] = nom_fichier
+        if statut_angle == "NON_CONCLUANT":
+            fiche_angle["diagnostic"] = v["diagnostic"]
+        fiches_angles.append(fiche_angle)
+        if statut_angle == "DECISIF":
+            decisifs.append(angle["nom"])
+    dossier = {
+        "statut": "RESISTANT",
+        "raison_classifieur": direction["raison"],
+        "angles": fiches_angles,
+        "registre": None,
+    }
+    if any(f["statut_angle"] == "ATTEIGNABLE" for f in fiches_angles):
+        dossier["statut"] = "ATTEIGNABLE_TROUVE"
+    elif decisifs:
+        # Lean a RÉFUTÉ le câblage sous forme dépliée (définionnellement
+        # égale à l'originale) : c'est Lean qui promeut, pas une analyse
+        # statique — même discipline que --valider-solidite.
+        dossier["statut"] = "ENCERCLE"
+        dossier["angles_decisifs"] = decisifs
+        raison = (f"encerclé (angles décisifs : {', '.join(decisifs)}) : "
+                  f"{direction['raison']}")
+        try:
+            inscrire_impossible_valide(
+                sorry, candidat["declaration"], direction["trou"],
+                direction["type_trou"], direction["terme"], raison,
+                fiches_angles[0]["fichier"], empreinte)
+            dossier["registre"] = "IMPOSSIBLE_VALIDÉ"
+        except ErreurRegistre as e:
+            dossier["registre"] = f"ÉCHEC_INSCRIPTION : {e}"
+            dossier["erreur_registre"] = str(e)
+    return inscrire_dossier_encerclement(
+        sorry, candidat["declaration"], direction["trou"],
+        direction["type_trou"], direction["terme"], empreinte, dossier)
+
+
+def lire_dossiers_encerclement() -> dict:
+    """Dossiers de circonscription : {clé_v2: dossier}.
+
+    Absent → {} (état normal). Corrompu/illisible → ErreurRegistre
+    (visible, jamais {} silencieux) — même discipline que le registre.
+    """
+    return _lecture_json_stricte(_chemin_dossiers_encerclement(),
+                                 "dossiers d'encerclement")
+
+
+def inscrire_dossier_encerclement(sorry: str, candidat: str, trou: str,
+                                  type_trou: str, terme: str, empreinte: str,
+                                  dossier: dict) -> dict:
+    """Inscrit le dossier de circonscription d'une direction INCONNU.
+
+    Clé : même schéma v2 que le registre (lié à l'énoncé). Écriture
+    atomique ; échec → ErreurRegistre (visible). Le statut du dossier
+    est validé (typé, jamais libre).
+    """
+    if dossier.get("statut") not in STATUTS_ENCERCLEMENT:
+        raise ErreurRegistre(
+            f"dossier invalide : statut {dossier.get('statut')!r} "
+            f"(attendu {' / '.join(STATUTS_ENCERCLEMENT)})")
+    chemin = _chemin_dossiers_encerclement()
+    try:
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+    except OSError as e:
+        raise ErreurRegistre(
+            f"dossiers non inscriptibles (mkdir) : {chemin} ({e})") from e
+    dossiers = lire_dossiers_encerclement()
+    fiche = dict(dossier)
+    fiche.update({
+        "sorry": sorry, "candidat": candidat, "trou": trou,
+        "type_trou": type_trou, "terme": terme,
+        "empreinte_enonce": empreinte,
+        "date": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+    dossiers[_cle_registre(sorry, candidat, trou, type_trou, terme,
+                           empreinte)] = fiche
+    _ecriture_atomique_json(chemin, dossiers, "dossiers d'encerclement")
+    return fiche
+
+
+def _ecriture_atomique_json(chemin: str, data: dict, nom: str) -> None:
+    """Écriture atomique d'un JSON : temporaire + flush + fsync +
+    os.replace. Pas de fichier tronqué en cas d'interruption ; échec →
+    ErreurRegistre (visible), jamais silencieux."""
     tmp = f"{chemin}.tmp-{os.getpid()}"
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(reg, fh, indent=2, ensure_ascii=False)
+            json.dump(data, fh, indent=2, ensure_ascii=False)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, chemin)
@@ -1370,8 +1639,27 @@ def inscrire_impossible_valide(sorry: str, candidat: str, trou: str,
         except OSError:
             pass
         raise ErreurRegistre(
-            f"registre non inscriptible : {chemin} ({e})") from e
-    return fiche
+            f"{nom} non inscriptible : {chemin} ({e})") from e
+
+
+def _lecture_json_stricte(chemin: str, nom: str) -> dict:
+    """Lecture stricte d'un JSON d'état : absent → {} (état normal),
+    corrompu/illisible/racine non-objet → ErreurRegistre (visible)."""
+    try:
+        with open(chemin, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        raise ErreurRegistre(
+            f"{nom} illisible : {chemin} ({e})") from e
+    except ValueError as e:
+        raise ErreurRegistre(
+            f"{nom} corrompu (JSON invalide) : {chemin} ({e})") from e
+    if not isinstance(data, dict):
+        raise ErreurRegistre(
+            f"{nom} corrompu (racine non-objet) : {chemin}")
+    return data
 
 
 def classifier_directions_trou(type_cible: str, contexte: list,
@@ -1379,8 +1667,9 @@ def classifier_directions_trou(type_cible: str, contexte: list,
                                subst: dict) -> tuple:
     """Pour un trou, classifie chaque terme candidat en trois zones.
 
-    Rend (directions, comptes) ; directions = [(terme, zone, raison)].
-    Mesure seulement — ne change pas le comportement de la synthèse.
+    Rend (directions, comptes) ; directions = [(terme, type_terme, zone,
+    raison)]. Mesure seulement — ne change pas le comportement de la
+    synthèse.
     """
     cible = _substituer(type_cible, subst)
     etendus = _termes_etendus(contexte, structures, subst)
@@ -1390,8 +1679,9 @@ def classifier_directions_trou(type_cible: str, contexte: list,
         if terme in vus:
             return
         vus.add(terme)
-        zone, raison = _atteignabilite(cible, _substituer(ttype, subst), defs)
-        directions.append((terme, zone, raison))
+        ttype_sub = _substituer(ttype, subst)
+        zone, raison = _atteignabilite(cible, ttype_sub, defs)
+        directions.append((terme, ttype_sub, zone, raison))
 
     for tnom, ttype in etendus:
         ajouter(tnom, ttype)
@@ -1407,7 +1697,7 @@ def classifier_directions_trou(type_cible: str, contexte: list,
             proj = f"{tnom}{_chemin_projection_conjonction(idx, len(parts))}"
             ajouter(proj, _substituer(part, subst))
     comptes = {"ATTEIGNABLE": 0, "CANDIDAT_IMPOSSIBLE": 0, "INCONNU": 0}
-    for _, zone, _ in directions:
+    for _, _, zone, _ in directions:
         comptes[zone] += 1
     return directions, comptes
 
@@ -1452,11 +1742,13 @@ def _directions_par_trou(d: DeclarationProuvee, noms_sorry: set,
 
 def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
                            dossier: str, sorry: str = "") -> tuple:
-    """(mesure, impossibles, meta_registre) en une seule passe.
+    """(mesure, impossibles, inconnus, meta_registre) en une seule passe.
 
     mesure = {"trous": {nom: comptes_4_zones}, "directions_ouvertes": n} ;
     impossibles = [{"trou", "type_trou", "terme", "raison"}] pour la
-    validation de solidité (chacune doit être RÉFUTÉE par Lean).
+    validation de solidité (chacune doit être RÉFUTÉE par Lean) ;
+    inconnus = [{"trou", "type_trou", "terme", "type_terme", "raison"}]
+    pour l'encerclement (jamais fermés au premier contact) ;
     meta_registre = {"avertissement": str|None, "entrees_v2": int,
     "entrees_legacy": int} — l'état du registre est toujours visible.
 
@@ -1484,12 +1776,12 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
         "entrees_v2": len(registre) - n_legacy,
         "entrees_legacy": n_legacy,
     }
-    trous, ouvertes, impossibles = {}, 0, []
+    trous, ouvertes, impossibles, inconnus = {}, 0, [], []
     for nom, cible, directions in _directions_par_trou(
             d, noms_sorry, lieurs_sorry, structures, defs):
         comptes = {"ATTEIGNABLE": 0, "CANDIDAT_IMPOSSIBLE": 0,
                    "INCONNU": 0, "IMPOSSIBLE_VALIDÉ": 0}
-        for terme, zone, raison in directions:
+        for terme, type_terme, zone, raison in directions:
             if (zone == "CANDIDAT_IMPOSSIBLE" and sorry
                     and est_impossible_valide(sorry, d.nom, nom, cible,
                                               terme, empreinte, registre)):
@@ -1498,11 +1790,17 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
             if zone == "CANDIDAT_IMPOSSIBLE":
                 impossibles.append({"trou": nom, "type_trou": cible,
                                     "terme": terme, "raison": raison})
+            elif zone == "INCONNU":
+                # L'INCONNU porte son type de terme : l'encerclement en a
+                # besoin (angle coercion : ascription explicite).
+                inconnus.append({"trou": nom, "type_trou": cible,
+                                 "terme": terme, "type_terme": type_terme,
+                                 "raison": raison})
         trous[nom] = comptes
         ouvertes += (comptes["ATTEIGNABLE"] + comptes["INCONNU"]
                      + comptes["CANDIDAT_IMPOSSIBLE"])
     return ({"trous": trous, "directions_ouvertes": ouvertes},
-            impossibles, meta_registre)
+            impossibles, inconnus, meta_registre)
 
 
 def mesurer_directions(d: DeclarationProuvee, ctx: dict,
@@ -1515,7 +1813,7 @@ def mesurer_directions(d: DeclarationProuvee, ctx: dict,
     élagués : ni comptés ni reproposés. Mesure exacte de l'état du
     classifieur — 100 % fiable en tant que mesure.
     """
-    mesure, _, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
+    mesure, _, _, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return mesure
 
 
@@ -1525,7 +1823,7 @@ def directions_impossibles(d: DeclarationProuvee, ctx: dict,
     "type_trou", "terme", "raison"}]. Pour la validation de solidité —
     chacune doit être RÉFUTÉE par Lean (sinon violation → durcissement).
     Les IMPOSSIBLE_VALIDÉ du registre sont exclues (déjà tranchées)."""
-    _, impossibles, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
+    _, impossibles, _, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return impossibles
 
 
@@ -1585,14 +1883,15 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
         # mesure des directions (quatre zones) + élagage réel :
         # les IMPOSSIBLE_VALIDÉ du registre Lean sont retirées des
         # directions ouvertes (docs/DISCIPLINE_ELAGAGE_REEL.md).
-        mesure, impossibles, meta_registre = _mesure_et_impossibles(
+        mesure, impossibles, inconnus, meta_registre = _mesure_et_impossibles(
             d, ctx, dossier, sorry)
         bruts.append(Candidat(
             sorry=sorry, module_source=d.module, fichier_source=d.fichier,
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
             conclusion_source=d.conclusion, squelette=squelette,
             score=score, raisons=raisons, directions=mesure,
-            impossibles=impossibles, lieurs=d.lieurs, opens=d.opens,
+            impossibles=impossibles, inconnus=inconnus, lieurs=d.lieurs,
+            opens=d.opens,
             groupes_complets=d.groupes_complets, univers=d.univers,
             variables=d.variables))
     choix = bruts
@@ -1609,6 +1908,7 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
              "conclusion": c.conclusion_source, "squelette": c.squelette,
              "score": c.score, "raisons": c.raisons,
              "directions": c.directions, "impossibles": c.impossibles,
+             "inconnus": c.inconnus,
              "lieurs": c.lieurs, "opens": c.opens,
              "groupes_complets": c.groupes_complets, "univers": c.univers,
              "variables": c.variables}
@@ -2364,6 +2664,36 @@ def _telescope_union(candidat: dict, contexte_sorry: dict) -> tuple:
     return univers, groupes
 
 
+def _entete_test_lean(sorry: str, module_sorry: str, candidat: dict,
+                      contexte_sorry: dict, opens_sorry: list | None,
+                      commentaires: list) -> tuple:
+    """En-tête commun des fichiers de test Lean générés (B3/B8/B9/B10/B11).
+
+    Rend (lignes, groupes) : imports (module du sorry + module du
+    candidat), `open` rejoués (candidat d'abord, puis sorry), `universe`,
+    et les groupes de lieurs de l'union des télescopes. Le type du trou
+    vit dans le contexte du candidat — on lie ses lieurs, pas seulement
+    ceux du sorry.
+    """
+    lignes = list(commentaires) + [""]
+    imports = []
+    for m in [module_sorry, candidat.get("module")]:
+        if m and m not in imports:
+            imports.append(m)
+    lignes += [f"import {m}" for m in imports]
+    # B3/B9 : rejouer les `open` du fichier du candidat d'abord (son
+    # contexte), puis ceux du sorry — sinon des identifiants manquent.
+    vus = set()
+    for o in (candidat.get("opens") or []) + (opens_sorry or []):
+        if o not in vus:
+            vus.add(o)
+            lignes.append(o)
+    univers, groupes = _telescope_union(candidat, contexte_sorry or {})
+    if univers:
+        lignes += ["", f"universe {' '.join(univers)}"]
+    return lignes, groupes
+
+
 def fichier_validation_solidite(sorry: str, module_sorry: str,
                                 candidat: dict, contexte_sorry: dict,
                                 type_trou: str, terme: str,
@@ -2388,11 +2718,7 @@ def fichier_validation_solidite(sorry: str, module_sorry: str,
     rejoués — sinon le type du trou n'élabore pas (`synthInstanceFailed`
     sur `NormedAddCommGroup E`).
     """
-    imports = []
-    for m in [module_sorry, candidat.get("module")]:
-        if m and m not in imports:
-            imports.append(m)
-    lignes = [
+    commentaires = [
         "-- Validation de solidité — atteignabilité typée à quatre zones.",
         f"-- Sorry visé : {sorry} (module {module_sorry}).",
         f"-- Candidat : {candidat.get('declaration')} "
@@ -2401,22 +2727,52 @@ def fichier_validation_solidite(sorry: str, module_sorry: str,
         f"--   pour le trou de type : {type_trou}",
         f"-- Raison du classifieur : {raison}",
         "-- Attendu : RÉFUTÉ (type mismatch). PROUVÉ = violation de solidité.",
-        "",
     ]
-    lignes += [f"import {m}" for m in imports]
-    # B3/B9 : rejouer les `open` du fichier du candidat d'abord (son
-    # contexte), puis ceux du sorry — sinon des identifiants manquent.
-    vus = set()
-    for o in (candidat.get("opens") or []) + (opens_sorry or []):
-        if o not in vus:
-            vus.add(o)
-            lignes.append(o)
-    univers, groupes = _telescope_union(candidat, contexte_sorry or {})
-    if univers:
-        lignes += ["", f"universe {' '.join(univers)}"]
+    lignes, groupes = _entete_test_lean(
+        sorry, module_sorry, candidat, contexte_sorry, opens_sorry,
+        commentaires)
     lignes += [
         "",
         f"example {' '.join(groupes)} : {type_trou} := {terme}",
+        "",
+    ]
+    return "\n".join(lignes)
+
+
+def fichier_encerclement(sorry: str, module_sorry: str, candidat: dict,
+                         contexte_sorry: dict, angle: dict,
+                         opens_sorry: list | None = None,
+                         raison: str = "") -> str:
+    """Test Lean d'un angle d'encerclement pour une direction INCONNU.
+
+    Même en-tête que la validation de solidité (B8–B11 : union des
+    télescopes, imports, opens, univers) ; seul le câblage change :
+    `example <télescope union> : <type_trou[angle]> := <terme[angle]>`.
+    L'angle ne prétend rien — Lean tranche :
+    - PROUVÉ → ATTEIGNABLE_TROUVE (piste de preuve réelle) ;
+    - RÉFUTÉ (mismatch) → angle décisif, la direction est cernée ;
+    - le reste → angle non concluant, l'encerclement continue.
+    """
+    commentaires = [
+        "-- Encerclement — direction INCONNU sondée sans fermeture",
+        "--   au premier contact (docs/ENCERCLEMENT.md).",
+        f"-- Sorry visé : {sorry} (module {module_sorry}).",
+        f"-- Candidat : {candidat.get('declaration')} "
+        f"(module {candidat.get('module')}).",
+        f"-- Angle : {angle['nom']} — {angle['justification']}",
+        f"-- Direction INCONNU : `{angle['terme']}`",
+        f"--   pour le trou de type : {angle['type_trou']}",
+        f"-- Raison du classifieur : {raison}",
+        "-- Attendu : RIEN. PROUVÉ = câblage trouvé ; RÉFUTÉ = angle",
+        "-- décisif ; autre = angle non concluant.",
+    ]
+    lignes, groupes = _entete_test_lean(
+        sorry, module_sorry, candidat, contexte_sorry, opens_sorry,
+        commentaires)
+    lignes += [
+        "",
+        f"example {' '.join(groupes)} : {angle['type_trou']} := "
+        f"{angle['terme']}",
         "",
     ]
     return "\n".join(lignes)
@@ -2508,4 +2864,22 @@ def rendre_console(res: dict) -> str:
                 f"({f['verdict']})")
         for e in v.get("erreurs_registre", []):
             lignes.append(f"    ⚠️  erreur registre : {e}")
+    e = res.get("encerclement")
+    if e:
+        lignes.append(
+            f"  Encerclement : {e['encercles']} direction(s) sondée(s), "
+            f"{e['inscrits_registre']} inscrite(s) au registre, "
+            f"{len(e['resistants'])} RÉSISTANT, "
+            f"{len(e['atteignables'])} ATTEIGNABLE_TROUVÉ, "
+            f"{e['sans_angle']} sans angle applicable")
+        for r in e["atteignables"]:
+            lignes.append(
+                f"    🎯 ATTEIGNABLE_TROUVÉ : {r['trou']} ← {r['terme'][:60]} "
+                f"({r['candidat']}) — câblage PROUVÉ par Lean, à examiner")
+        for r in e["resistants"]:
+            lignes.append(
+                f"    ⚠️ RÉSISTANT : {r['trou']} ← {r['terme'][:60]} "
+                f"({r['candidat']}) — mécanisme sensible, escaladé")
+        for err in e.get("erreurs", []):
+            lignes.append(f"    ⚠️  erreur encerclement : {err}")
     return "\n".join(lignes)
