@@ -150,6 +150,14 @@ JUSTIFICATIONS = {
                "quelle complexité vers la décharge.",
         "sert": "tous",
     },
+    "chemins_verifiables": {
+        "but": "Chemins vérifiables vers un sorry : candidats de câblage "
+               "guidés (jamais de source contenant un sorry), chacun identifié "
+               "formellement comme une preuve — un fichier Lean que Lean "
+               "tranche (PROUVÉ / RÉFUTÉ avec diagnostic / INDÉCIDÉ). "
+               "L'instrument propose, Lean dispose.",
+        "sert": "tous",
+    },
     "rapport": {
         "but": "Restitution (console/Markdown) : l'instrument montre, "
                "il n'automatise pas le jugement.",
