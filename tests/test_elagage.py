@@ -123,3 +123,161 @@ class TestElagageReel:
         inscrire_impossible_valide("but", "h", "Nat", "s", "r", "f.lean")
         res = candidats_cablage("but", dossier_elagage, max_candidats=1)
         assert res["candidats"][0]["directions"]["directions_ouvertes"] > 0
+
+
+class TestDurcissementSolidite:
+    """B8/B9 (2026-10-01) : la généralisation à `local_existence` a révélé
+    que le test de solidité liait les lieurs du sorry et n'importait que
+    son module — 9 INCONCLUSIF sur 16 (Lean : `Unknown identifier 'sol.u'`,
+    `HasInitialData`/`BKMAnalytic` inconnus). Le test doit lier les lieurs
+    du candidat et importer son module : le type du trou vit dans le
+    contexte du candidat.
+    """
+
+    def _candidat_bkm(self):
+        # Données réelles du run local_existence du 2026-10-01
+        # (Solidite_local_existence_0_4.lean).
+        return {
+            "declaration": "bkm_extension_preserves_data",
+            "module": "Clay_NS_Part14_Interfaces",
+            "lieurs": ["(ν : ℝ)", "(data : ClayInitialData)",
+                       "(sol : ClassicalSolution ν)",
+                       "(hdata : HasInitialData ν data sol)"],
+            "opens": ["open MeasureTheory"],
+        }
+
+    def test_b8_lie_les_lieurs_du_candidat(self):
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        contenu = fichier_validation_solidite(
+            "local_existence", "Clay_NS_Master", self._candidat_bkm(), {},
+            "ContinuousOn (vorticityLinf sol.u) (Set.Icc (0:ℝ) sol.horizon)",
+            "ν", opens_sorry=[], raison="têtes incompatibles")
+        ligne_ex = next(l for l in contenu.splitlines()
+                        if l.startswith("example"))
+        # `sol` (lieur du candidat) est lié ; le type du trou l'utilise.
+        assert "(sol : ClassicalSolution ν)" in ligne_ex
+        assert "sol.u" in contenu
+
+    def test_b9_importe_le_module_du_candidat(self):
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        contenu = fichier_validation_solidite(
+            "local_existence", "Clay_NS_Master", self._candidat_bkm(), {},
+            "BKMAnalytic ν sol", "ν", opens_sorry=[],
+            raison="têtes incompatibles")
+        assert "import Clay_NS_Master" in contenu
+        # BKMAnalytic est déclaré dans Clay_NS_Part5_BKM, importé
+        # transitivement par le module du candidat — pas par celui du sorry.
+        assert "import Clay_NS_Part14_Interfaces" in contenu
+
+    def test_b9_rejoue_les_opens_du_candidat(self):
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        contenu = fichier_validation_solidite(
+            "local_existence", "Clay_NS_Master", self._candidat_bkm(), {},
+            "Nat", "0", opens_sorry=["open Topology"],
+            raison="têtes incompatibles")
+        assert "open MeasureTheory" in contenu
+        assert "open Topology" in contenu
+
+    def test_sans_univers_explicites_dans_les_lieurs(self):
+        # B4 : un lieur avec univers explicite ne doit pas être recopié brut.
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        cand = {"declaration": "c", "module": "M",
+                "lieurs": ["(x : Foo.{u})"], "opens": []}
+        contenu = fichier_validation_solidite(
+            "s", "MS", cand, {}, "Nat", "0", raison="r")
+        assert ".{u}" not in contenu
+
+    def test_b10_terme_du_sorry_lie_aussi(self):
+        # Le pool de termes inclut les lieurs du sorry : `hν` testé pour
+        # un trou du candidat doit être lié (cas réel Solidite_..._0_0.lean).
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        cand = {"declaration": "bkm_extension_preserves_data",
+                "module": "Clay_NS_Part14_Interfaces",
+                "lieurs": ["(ν : ℝ)", "(sol : ClassicalSolution ν)"],
+                "groupes_complets": ["(ν : ℝ)", "(sol : ClassicalSolution ν)"],
+                "univers": [], "variables": [], "opens": []}
+        ctx_sorry = {"lieurs": ["(ν : ℝ)", "(hν : 0 < ν)",
+                                "(data : ClayInitialData)"],
+                     "univers": [], "variables": []}
+        contenu = fichier_validation_solidite(
+            "local_existence", "Clay_NS_Master", cand, ctx_sorry,
+            "ClassicalSolution ν", "hν", raison="têtes incompatibles")
+        ligne_ex = next(l for l in contenu.splitlines()
+                        if l.startswith("example"))
+        assert "(hν : 0 < ν)" in ligne_ex
+        assert "(sol : ClassicalSolution ν)" in ligne_ex
+        # `ν` lié une seule fois malgré la présence dans les deux contextes.
+        assert ligne_ex.count("(ν : ℝ)") == 1
+
+    def test_b11_universe_et_variable_emis(self):
+        # Cas réel Solidite_local_existence_1_2.lean : `E` vient d'un
+        # `variable (E : Type u) [NormedAddCommGroup E]` — sans lui,
+        # `synthInstanceFailed`.
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        cand = {"declaration": "local_existence_conditional",
+                "module": "Clay_NS_Part25_KatoBanachY",
+                "lieurs": ["(ν : ℝ)"],
+                "groupes_complets": ["(ν : ℝ)"],
+                "univers": ["u"],
+                "variables": ["(E : Type u)", "[NormedAddCommGroup E]",
+                              "[NormedSpace ℝ E]"],
+                "opens": []}
+        contenu = fichier_validation_solidite(
+            "local_existence", "Clay_NS_Master", cand, {},
+            "∀ T : ℝ, KatoBilinearYData E T", "ν",
+            raison="têtes incompatibles")
+        assert "universe u" in contenu
+        ligne_ex = next(l for l in contenu.splitlines()
+                        if l.startswith("example"))
+        assert "(E : Type u)" in ligne_ex
+        assert "[NormedAddCommGroup E]" in ligne_ex
+
+    def test_b11_implicites_en_tete_rejoues(self):
+        # Les groupes `{...}` / `[...]` de l'en-tête sont rejoués.
+        from phi_complexity.chemins_verifiables import (
+            fichier_validation_solidite)
+        cand = {"declaration": "c", "module": "M",
+                "lieurs": ["(x : Nat)"],
+                "groupes_complets": ["{E : Type*}", "[NormedAddCommGroup E]",
+                                     "(x : Nat)"],
+                "univers": [], "variables": [], "opens": []}
+        contenu = fichier_validation_solidite(
+            "s", "MS", cand, {}, "E", "x", raison="r")
+        ligne_ex = next(l for l in contenu.splitlines()
+                        if l.startswith("example"))
+        assert "{E : Type*}" in ligne_ex
+        assert "[NormedAddCommGroup E]" in ligne_ex
+
+
+class TestContexteVariables:
+    def test_variable_section_refermee_exclue(self):
+        from phi_complexity.chemins_verifiables import _contexte_variables
+        texte = (
+            "universe u\n"
+            "variable (E : Type u) [NormedAddCommGroup E]\n"
+            "section Fermee\n"
+            "variable (X : Nat)\n"
+            "end Fermee\n"
+            "theorem c (x : Nat) : True := trivial\n")
+        univers, variables = _contexte_variables(texte, 6)
+        assert univers == ["u"]
+        assert "(E : Type u)" in variables
+        assert "[NormedAddCommGroup E]" in variables
+        assert not any("X : Nat" in g for g in variables)
+
+    def test_analyser_entete_inclure_implicites(self):
+        from phi_complexity.chemins_verifiables import analyser_entete
+        entete = ("theorem c {E : Type*} [NormedAddCommGroup E] "
+                  "(x : E) : True")
+        groupes, _, _ = analyser_entete(entete, "c")
+        assert groupes == ["(x : E)"]
+        complets, _, _ = analyser_entete(
+            entete, "c", inclure_implicites=True)
+        assert complets == ["{E : Type*}", "[NormedAddCommGroup E]",
+                            "(x : E)"]

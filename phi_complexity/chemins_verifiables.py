@@ -71,6 +71,15 @@ class DeclarationProuvee:
     #: squelette les rejoue pour que les identifiants courts résolvent
     #: comme dans le module d'origine.
     opens: list = field(default_factory=list)
+    #: Groupes de lieurs COMPLETS de l'en-tête (explicites + `{...}` +
+    #: `[...]`) — le test de solidité rejoue le télescope entier (B11),
+    #: contrairement au `refine` positionnel qui n'utilise que `lieurs`.
+    groupes_complets: list = field(default_factory=list)
+    #: Noms d'univers (`universe u`) en portée à la déclaration (B11).
+    univers: list = field(default_factory=list)
+    #: Groupes `variable` en portée à la déclaration, dans l'ordre
+    #: (B11) : font partie du télescope effectif.
+    variables: list = field(default_factory=list)
 
 
 def _nom_lean(d: DeclarationProuvee) -> str:
@@ -101,6 +110,20 @@ class Candidat:
     #: (`--valider-solidite`). Chacune doit être RÉFUTÉE par Lean pour
     #: devenir IMPOSSIBLE_VALIDÉ (registre).
     impossibles: list = field(default_factory=list)
+    #: Groupes de lieurs EXPLICITES du candidat (ex. ["(ν : ℝ)", ...]) —
+    #: le test de solidité les lie (B8 : le type du trou vit dans le
+    #: contexte du candidat, pas dans celui du sorry).
+    lieurs: list = field(default_factory=list)
+    #: Commandes `open` du fichier du module source du candidat — le
+    #: test de solidité les rejoue (B9 : avec l'import du module).
+    opens: list = field(default_factory=list)
+    #: Groupes de lieurs COMPLETS (explicites + `{...}` + `[...]`) —
+    #: le test de solidité rejoue le télescope entier (B11).
+    groupes_complets: list = field(default_factory=list)
+    #: Noms d'univers (`universe u`) en portée à la déclaration (B11).
+    univers: list = field(default_factory=list)
+    #: Groupes `variable` en portée à la déclaration (B11).
+    variables: list = field(default_factory=list)
 
 
 def module_depuis_fichier(dossier: str, chemin: str) -> str:
@@ -174,7 +197,8 @@ def _noms_groupe(contenu: str) -> list:
     return []
 
 
-def analyser_entete(entete: str, nom: str) -> tuple[list, list, str]:
+def analyser_entete(entete: str, nom: str,
+                    inclure_implicites: bool = False) -> tuple[list, list, str]:
     """Retourne (groupes explicites, noms des lieurs explicites, conclusion).
 
     Analyse à profondeur réelle (pile) :
@@ -186,6 +210,9 @@ def analyser_entete(entete: str, nom: str) -> tuple[list, list, str]:
       des lieurs positionnels : Lean les remplit seul par unification /
       synthèse de classes. Les passer positionnellement au `refine`
       décale tous les arguments (diagnostiqué sur `leray_hopf_conditional`) ;
+    - `inclure_implicites=True` (B11) : capture aussi les groupes `{...}`
+      et `[...]` — le test de solidité rejoue le télescope entier, pas
+      une application positionnelle ;
     - la conclusion (après le premier `:` de profondeur 0) n'est jamais
       analysée comme des lieurs.
     """
@@ -207,7 +234,8 @@ def analyser_entete(entete: str, nom: str) -> tuple[list, list, str]:
             if not pile:
                 continue
             ouvrant, debut = pile.pop()
-            if not pile and ouvrant == "(":
+            if not pile and (ouvrant == "(" or
+                             (inclure_implicites and ouvrant in "{[")):
                 groupes.append(zone[debut:i + 1])
                 noms.extend(_noms_groupe(zone[debut + 1:i]))
     return groupes, noms, conclusion
@@ -248,6 +276,75 @@ def _namespaces_de_ligne(evs: list, num: int) -> list:
         elif pile:
             pile.pop()
     return [nom for genre, nom in pile if genre == "namespace"]
+
+
+def _sections_de_ligne(evs: list, num: int) -> list:
+    """Pile des sections englobant la ligne `num` (namespaces exclus)."""
+    pile: list = []
+    for ligne, sens, quoi in evs:
+        if ligne > num:
+            break
+        if sens == "+":
+            pile.append(quoi)  # (genre, nom)
+        elif isinstance(quoi, str) and quoi:
+            while pile and pile[-1][1] != quoi:
+                pile.pop()
+            if pile:
+                pile.pop()
+        elif pile:
+            pile.pop()
+    return [nom for genre, nom in pile if genre == "section"]
+
+
+def _decouper_groupes(contenu: str) -> list:
+    """Découpe `contenu` en groupes (...), [...] ou {...} à profondeur 0."""
+    groupes, pile, debut = [], [], None
+    for i, c in enumerate(contenu):
+        if c in "([{":
+            if not pile:
+                debut = i
+            pile.append(c)
+        elif c in ")]}":
+            if pile:
+                pile.pop()
+            if not pile and debut is not None:
+                groupes.append(contenu[debut:i + 1])
+                debut = None
+    return groupes
+
+
+def _contexte_variables(texte: str, num_decl: int, evs=None) -> tuple:
+    """(noms d'univers, groupes `variable` en portée) avant `num_decl`.
+
+    B11 : les `variable` de section font partie du télescope effectif du
+    candidat (ex. `variable (E : Type u) [NormedAddCommGroup E]`) ; sans
+    eux le type du trou n'élabore pas (`synthInstanceFailed`). Seules
+    les variables dont la section englobe la déclaration sont retenues
+    (une variable d'une section refermée est hors de portée).
+    """
+    if evs is None:
+        evs = _piles_namespaces(texte)
+    pile_decl = _sections_de_ligne(evs, num_decl)
+    univers, vus_u = [], set()
+    groupes, vus_g = [], set()
+    for m in re.finditer(r"^(universe|variable)\s+([^\n]+)$", texte, re.M):
+        ligne = texte[:m.start()].count("\n") + 1
+        if ligne >= num_decl:
+            break
+        if m.group(1) == "universe":
+            for u in m.group(2).split():
+                if u not in vus_u:
+                    vus_u.add(u)
+                    univers.append(u)
+        else:
+            pile_var = _sections_de_ligne(evs, ligne)
+            if pile_var != pile_decl[:len(pile_var)]:
+                continue  # section refermée : hors de portée
+            for g in _decouper_groupes(m.group(2)):
+                if g not in vus_g:
+                    vus_g.add(g)
+                    groupes.append(g)
+    return univers, groupes
 
 
 def _opens_fichier(texte: str) -> list:
@@ -294,12 +391,16 @@ def declarations_dans_fichier(dossier: str, chemin: str
         a_sorry = any(num <= ls < fin for ls in lignes_sorry)
         entete = extraire_entete(nom, texte) or ""
         groupes, noms, conclusion = analyser_entete(entete, nom)
+        groupes_complets, _, _ = analyser_entete(
+            entete, nom, inclure_implicites=True)
+        univers, variables = _contexte_variables(texte, num, evs)
         res.append(DeclarationProuvee(
             module=module, fichier=os.path.basename(chemin), nom=nom,
             nom_qualifie=qualifie,
             genre=genre, ligne=num, entete=entete, lieurs=groupes,
             noms_lieurs=noms, conclusion=conclusion, a_sorry=a_sorry,
-            opens=list(opens)))
+            opens=list(opens), groupes_complets=groupes_complets,
+            univers=univers, variables=variables))
     return res
 
 
@@ -1378,10 +1479,12 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
             conclusion_source=d.conclusion, squelette=squelette,
             score=score, raisons=raisons, directions=mesure,
-            impossibles=impossibles))
+            impossibles=impossibles, lieurs=d.lieurs, opens=d.opens,
+            groupes_complets=d.groupes_complets, univers=d.univers,
+            variables=d.variables))
     choix = bruts
     choix = bruts
-    return {
+    res = {
         "statut": "TROUVÉ",
         "sorry": sorry,
         "module_sorry": ctx["module_sorry"],
@@ -1392,10 +1495,24 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
              "fichier": c.fichier_source, "ligne": c.ligne,
              "conclusion": c.conclusion_source, "squelette": c.squelette,
              "score": c.score, "raisons": c.raisons,
-             "directions": c.directions, "impossibles": c.impossibles}
+             "directions": c.directions, "impossibles": c.impossibles,
+             "lieurs": c.lieurs, "opens": c.opens,
+             "groupes_complets": c.groupes_complets, "univers": c.univers,
+             "variables": c.variables}
             for c in choix
         ],
     }
+    ent_sorry = ctx.get("ent_sorry")
+    # B10 : le test de solidité a besoin du contexte du sorry aussi — le
+    # pool de termes du classifieur inclut ses lieurs (ex. `hν` testé pour
+    # un trou du candidat).
+    res["contexte_sorry"] = {
+        "lieurs": ent_sorry.lieurs if ent_sorry else [],
+        "groupes_complets": ent_sorry.groupes_complets if ent_sorry else [],
+        "univers": ent_sorry.univers if ent_sorry else [],
+        "variables": ent_sorry.variables if ent_sorry else [],
+    }
+    return res
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2095,31 +2212,92 @@ def fichier_verification(sorry: str, candidat: dict, module_sorry: str,
     return "\n".join(lignes)
 
 
+def _telescope_union(candidat: dict, contexte_sorry: dict) -> tuple:
+    """Union des télescopes (candidat puis sorry) : (univers, groupes).
+
+    B10 : le pool de termes du classifieur inclut les lieurs du sorry
+    (ex. `hν` testé pour un trou du candidat) — le test doit lier les
+    deux télescopes, pas un seul. B11 : variables de section et groupes
+    implicites/instances inclus — le type du trou doit élaborer.
+    Déduplication par nom lié (le candidat gagne) et par texte exact.
+    """
+    univers, vus_u = [], set()
+    for u in (candidat.get("univers") or []) + \
+             (contexte_sorry.get("univers") or []):
+        if u not in vus_u:
+            vus_u.add(u)
+            univers.append(u)
+    groupes, vus_g, lies = [], set(), set()
+    sources = [
+        candidat.get("variables") or [],
+        contexte_sorry.get("variables") or [],
+        candidat.get("groupes_complets") or candidat.get("lieurs") or [],
+        contexte_sorry.get("lieurs") or [],
+    ]
+    for src in sources:
+        for g in src:
+            if g in vus_g:
+                continue
+            interieur = g[1:-1] if g[:1] in "([{" and g[-1:] in ")]}" else g
+            noms = _noms_groupe(interieur)
+            if any(n in lies for n in noms):
+                continue  # collision : le premier (candidat) gagne
+            vus_g.add(g)
+            lies.update(noms)
+            groupes.append(_sans_univers_explicites(g))
+    return univers, groupes
+
+
 def fichier_validation_solidite(sorry: str, module_sorry: str,
-                                groupes: list, type_trou: str, terme: str,
+                                candidat: dict, contexte_sorry: dict,
+                                type_trou: str, terme: str,
                                 opens_sorry: list | None = None,
                                 raison: str = "") -> str:
     """Test minimal de solidité : une direction CANDIDAT_IMPOSSIBLE.
 
-    `example <lieurs du sorry> : <type_trou> := <terme>` doit être RÉFUTÉ
+    `example <télescope union> : <type_trou> := <terme>` doit être RÉFUTÉ
     par Lean (type mismatch). Si PROUVÉ : violation de solidité du
     classifieur → durcissement immédiat
     (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md).
+
+    B8 : on lie les lieurs du *candidat*, pas seulement ceux du sorry —
+    le type du trou vit dans le contexte du candidat (ex. `sol` paramètre
+    de `bkm_extension_preserves_data` → `Unknown identifier 'sol.u'`).
+    B9 : on importe le module du *candidat* en plus de celui du sorry —
+    comme `fichier_verification` le fait déjà (ex. `BKMAnalytic` déclaré
+    dans `Clay_NS_Part5_BKM` → `unknown identifier`).
+    B10 : union des deux télescopes — le pool de termes inclut les lieurs
+    du sorry (ex. `hν` testé pour un trou du candidat).
+    B11 : `universe`, `variable` de section et groupes implicites/instances
+    rejoués — sinon le type du trou n'élabore pas (`synthInstanceFailed`
+    sur `NormedAddCommGroup E`).
     """
+    imports = []
+    for m in [module_sorry, candidat.get("module")]:
+        if m and m not in imports:
+            imports.append(m)
     lignes = [
-        "-- Validation de solidité — atteignabilité typée à trois zones.",
+        "-- Validation de solidité — atteignabilité typée à quatre zones.",
         f"-- Sorry visé : {sorry} (module {module_sorry}).",
+        f"-- Candidat : {candidat.get('declaration')} "
+        f"(module {candidat.get('module')}).",
         f"-- Direction CANDIDAT_IMPOSSIBLE : `{terme}`",
         f"--   pour le trou de type : {type_trou}",
         f"-- Raison du classifieur : {raison}",
         "-- Attendu : RÉFUTÉ (type mismatch). PROUVÉ = violation de solidité.",
         "",
-        f"import {module_sorry}",
     ]
-    # B3 : rejouer les `open` du fichier du sorry (même raison que le
-    # fichier de vérification — sinon des identifiants manquent).
-    for o in (opens_sorry or []):
-        lignes.append(o)
+    lignes += [f"import {m}" for m in imports]
+    # B3/B9 : rejouer les `open` du fichier du candidat d'abord (son
+    # contexte), puis ceux du sorry — sinon des identifiants manquent.
+    vus = set()
+    for o in (candidat.get("opens") or []) + (opens_sorry or []):
+        if o not in vus:
+            vus.add(o)
+            lignes.append(o)
+    univers, groupes = _telescope_union(candidat, contexte_sorry or {})
+    if univers:
+        lignes += ["", f"universe {' '.join(univers)}"]
     lignes += [
         "",
         f"example {' '.join(groupes)} : {type_trou} := {terme}",
