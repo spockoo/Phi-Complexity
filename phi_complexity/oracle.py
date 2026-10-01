@@ -1,133 +1,142 @@
 """
-phi_complexity/oracle.py — Oracle de Radiance (Phase 14)
-Gardien du Versionnement Souverain : bloque une release si la radiance chute.
+oracle.py — Traces d'oracle pour phi-complexity (v0.11.0, opt-in EFT).
 
-Loi de version Phi : v{floor(radiance)}.{nb_tests}
-Ancrage : EQ-AFR-BMAD (Loi Antifragile) + AX-A39 (Attracteur Doré).
+Un oracle n'est pas un devin : c'est une chaîne de raisonnement EXHIBÉE.
+Chaque mise à jour de croyance enregistre :
+    horodatage, moteur, cible, symbole/hypothèse, prior,
+    termes d'évidence, postérieur, borne d'erreur certifiée,
+    décision/action soutenue, mode arithmétique, limites.
+
+En mode flottant (défaut), la trace existe aussi — la chaîne
+prior → évidences → postérieur → action ne dépend pas de l'EFT ;
+seule la borne d'erreur est alors `None` (« non certifiée »), et c'est
+écrit en toutes lettres. L'EFT (PHI_EFT=1 ou --exact) ajoute la
+certification arithmétique, pas la chaîne.
+
+LIMITES (mêmes que croyances.py, rappelées à chaque sortie) :
+- Les traces exhibent le RAISONNEMENT de l'instrument, pas une vérité.
+  Un postérieur certifié à 2⁻¹⁰⁰ reste une heuristique d'inspiration
+  bayésienne : l'exactitude arithmétique ne rend pas le modèle vrai.
+- La borne certifiée ne couvre que l'arithmétique câblée en EFT, à
+  entrées fixées (voir eft.py : PORTÉE DE LA BORNE).
 """
+import json
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
-from __future__ import annotations
-
-import math
-from typing import Any, Dict, List
-
-from .core import PHI
+from .core import VERSION
 
 
-class OracleRadiance:
-    """
-    Oracle de Radiance — Gardien du Versionnement Souverain.
+LIMITE_ORACLE = (
+    "TRACE D'ORACLE — chaîne de raisonnement exhibée, pas une vérité. "
+    "Le postérieur reste une HEURISTIQUE d'inspiration bayésienne "
+    "(voir croyances.py : LIMITE_HONNETETE), même certifié à 2⁻¹⁰⁰ près : "
+    "l'exactitude arithmétique ne rend pas le modèle vrai. La borne "
+    "certifiée ne couvre que l'arithmétique EFT à entrées fixées "
+    "(erreur des capteurs amont non couverte)."
+)
 
-    Audite un ensemble de fichiers et délivre un verdict de release :
-    si la radiance globale est en-dessous du seuil, la release est bloquée.
-    La version suit la loi Phi : v{floor(radiance_globale)}.{nb_tests}.
-    """
 
-    SEUIL_PAR_DEFAUT: float = 70.0
+@dataclass
+class TraceEntree:
+    """Une mise à jour de croyance, avec tout son contexte."""
+    horodatage: str
+    moteur: str            # "bayes" | "croyances"
+    cible: str             # fichier ou dossier analysé
+    symbole: str           # hypothèse (bayes) ou nom de symbole (croyances)
+    prior: float
+    termes_evidence: dict = field(default_factory=dict)
+    posterior_hi: Optional[float] = None
+    posterior_lo: Optional[float] = None
+    posterior: Optional[float] = None   # meilleur flottant (hi+lo)
+    borne_erreur: Optional[float] = None  # None = non certifiée (mode flottant)
+    decision: str = ""
+    mode: str = "flottant"  # "flottant" | "eft"
 
-    def calculer_version_phi(self, radiance: float, nb_tests: int) -> str:
-        """Calcule la version Phi : v{floor(radiance)}.{nb_tests}."""
-        return f"v{int(math.floor(radiance))}.{nb_tests}"
-
-    def auditer_fichiers(self, fichiers: List[str]) -> List[Dict[str, Any]]:
-        """Audite une liste de fichiers et retourne leurs métriques individuelles."""
-        from . import auditer as phi_auditer
-
-        resultats: List[Dict[str, Any]] = []
-        for f in fichiers:
-            try:
-                resultats.append(phi_auditer(f))
-            except Exception as e:
-                resultats.append(
-                    {
-                        "fichier": f,
-                        "radiance": 0.0,
-                        "erreur": str(e),
-                    }
-                )
-        return resultats
-
-    def calculer_radiance_globale(self, audits: List[Dict[str, Any]]) -> float:
-        """
-        Calcule la radiance globale comme moyenne pondérée par φ.
-        Pondération dorée : les fichiers à haute radiance pèsent plus (φ-Weighted Mean).
-        Les fichiers en erreur (radiance == 0 ET clé 'erreur' présente) sont exclus
-        du calcul pour ne pas pénaliser injustement la release.
-        """
-        if not audits:
-            return 0.0
-        audits_valides = [
-            a
-            for a in audits
-            if not (max(0.0, float(a.get("radiance", 0.0))) == 0.0 and "erreur" in a)
-        ]
-        if not audits_valides:
-            return 0.0
-        radiancies = [max(0.0, float(a.get("radiance", 0.0))) for a in audits_valides]
-        poids = [r / PHI for r in radiancies]
-        total_poids = sum(poids)
-        if total_poids == 0.0:
-            return 0.0
-        return sum(r * p for r, p in zip(radiancies, poids)) / total_poids
-
-    def valider_release(
-        self,
-        fichiers: List[str],
-        seuil: float = SEUIL_PAR_DEFAUT,
-        nb_tests: int = 0,
-    ) -> Dict[str, Any]:
-        """
-        Délivre le verdict de release selon l'Oracle de Radiance.
-        Retourne un dictionnaire complet : acceptée/bloquée + version Phi.
-        """
-        audits = self.auditer_fichiers(fichiers)
-        radiance_globale = self.calculer_radiance_globale(audits)
-        acceptee = radiance_globale >= seuil
-        version = self.calculer_version_phi(radiance_globale, nb_tests)
-        fichiers_sous_seuil = [
-            str(a.get("fichier", ""))
-            for a in audits
-            if float(a.get("radiance", 0.0)) < seuil
-        ]
+    def vers_dict(self) -> dict:
         return {
-            "acceptee": acceptee,
-            "radiance_globale": round(radiance_globale, 2),
-            "seuil": seuil,
-            "version_phi": version,
-            "nb_fichiers": len(fichiers),
-            "nb_tests": nb_tests,
-            "fichiers_sous_seuil": fichiers_sous_seuil,
-            "audits": audits,
+            "horodatage": self.horodatage,
+            "moteur": self.moteur,
+            "cible": self.cible,
+            "symbole": self.symbole,
+            "prior": self.prior,
+            "termes_evidence": dict(self.termes_evidence),
+            "posterior_hi": self.posterior_hi,
+            "posterior_lo": self.posterior_lo,
+            "posterior": self.posterior,
+            "borne_erreur_certifiee": self.borne_erreur,
+            "decision": self.decision,
+            "mode": self.mode,
         }
 
-    def rapport_oracle(self, verdict: Dict[str, Any]) -> str:
-        """Génère le rapport ASCII de l'Oracle de Radiance."""
-        acceptee: bool = bool(verdict["acceptee"])
-        symbole = "✦ RELEASE AUTORISÉE" if acceptee else "░ RELEASE BLOQUÉE"
 
-        lignes = [
-            "╔══════════════════════════════════════════════════╗",
-            "║      PHI-ORACLE — VALIDATION DE RELEASE          ║",
-            "╚══════════════════════════════════════════════════╝",
-            "",
-            f"  {'☼' if acceptee else '⚠'}  {symbole}",
-            f"  Version Phi    : {verdict['version_phi']}",
-            f"  Radiance Globale : {verdict['radiance_globale']} / 100",
-            f"  Seuil Requis   : {verdict['seuil']}",
-            f"  Fichiers audités : {verdict['nb_fichiers']}",
-            f"  Tests passés   : {verdict['nb_tests']}",
-            "",
-        ]
-        sous_seuil: List[str] = list(verdict.get("fichiers_sous_seuil", []))
-        if sous_seuil:
-            lignes.append(f"  ⚠  FICHIERS SOUS SEUIL ({len(sous_seuil)}) :")
-            for f in sous_seuil:
-                lignes.append(f"    - {f}")
-        else:
-            lignes.append("  ✦  Tous les fichiers respectent le seuil de radiance.")
-        lignes += [
-            "",
-            "  ─────────────────────────────────────────────────",
-            "  Ancré dans le Morphic Phi Framework — φ-Meta 2026",
-        ]
+class TraceurOracle:
+    """Collecte les traces d'un passage d'inférence. Zéro état global :
+    une instance par exécution, jamais de singleton."""
+
+    def __init__(self) -> None:
+        self.entrees: List[TraceEntree] = []
+
+    def enregistrer(self, moteur: str, cible: str, symbole: str,
+                    prior: float, termes_evidence: dict,
+                    posterior: Optional[float] = None,
+                    posterior_hi: Optional[float] = None,
+                    posterior_lo: Optional[float] = None,
+                    borne_erreur: Optional[float] = None,
+                    decision: str = "", mode: str = "flottant") -> TraceEntree:
+        entree = TraceEntree(
+            horodatage=datetime.now(timezone.utc).isoformat(),
+            moteur=moteur, cible=cible, symbole=symbole, prior=prior,
+            termes_evidence=dict(termes_evidence),
+            posterior=posterior, posterior_hi=posterior_hi,
+            posterior_lo=posterior_lo, borne_erreur=borne_erreur,
+            decision=decision, mode=mode,
+        )
+        self.entrees.append(entree)
+        return entree
+
+    def filtrer(self, symbole: str) -> List[TraceEntree]:
+        """Toutes les traces d'un symbole/hypothèse (comparaison exacte)."""
+        return [e for e in self.entrees if e.symbole == symbole]
+
+    def vers_json(self) -> dict:
+        """Enveloppe JSON-sérialisable, embarquable dans un snapshot."""
+        return {
+            "outil": "phi oracle",
+            "version_phi": VERSION,
+            "nb_traces": len(self.entrees),
+            "traces": [e.vers_dict() for e in self.entrees],
+            "limites": LIMITE_ORACLE,
+        }
+
+
+def rendre_oracle_console(traces: List[TraceEntree]) -> str:
+    """Chaîne de raisonnement lisible : prior → évidences → postérieur → action."""
+    lignes = [
+        "╔════════════════════════════════════════════════════════════════════╗",
+        "║              PHI-COMPLEXITY — TRACE D'ORACLE  🔮                   ║",
+        "╚════════════════════════════════════════════════════════════════════╝",
+        "",
+    ]
+    if not traces:
+        lignes.append("  (aucune trace — rien n'a été inféré)")
         return "\n".join(lignes)
+    for i, t in enumerate(traces, 1):
+        lignes.append(f"  ┌─ TRACE {i} : {t.symbole}  [{t.moteur} · {t.cible}]")
+        lignes.append(f"  │  prior    : {t.prior:.6f}")
+        if t.termes_evidence:
+            termes = "  ".join(f"{k}={v:.4f}" for k, v in t.termes_evidence.items())
+            lignes.append(f"  │  évidences: {termes}")
+        if t.posterior is not None:
+            lignes.append(f"  │  postérieur: {t.posterior:.6f}", )
+        if t.borne_erreur is not None:
+            lignes.append(f"  │  borne d'erreur certifiée (EFT) : {t.borne_erreur:.3e}")
+        else:
+            lignes.append("  │  borne d'erreur : non certifiée (mode flottant)")
+        lignes.append(f"  │  décision : {t.decision}")
+        lignes.append(f"  │  mode     : {t.mode} · {t.horodatage}")
+        lignes.append("  └" + "─" * 68)
+        lignes.append("")
+    lignes.append("  LIMITES : " + LIMITE_ORACLE)
+    return "\n".join(lignes)

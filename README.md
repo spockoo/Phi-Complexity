@@ -6,7 +6,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/phi-complexity.svg)](https://pypi.org/project/phi-complexity/)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/spockoo/phi-complexity/blob/main/LICENSE)
-[![Tests](https://img.shields.io/badge/tests-26%20passed-brightgreen)](https://github.com/spockoo/phi-complexity/tree/main/tests)
+[![Tests](https://img.shields.io/badge/tests-386%20passed-brightgreen)](https://github.com/spockoo/phi-complexity/tree/main/tests)
 
 `phi-complexity` is the **first code quality library** that measures the health of your Python code using **universal mathematical invariants** derived from the Golden Ratio (φ = 1.618...).
 
@@ -29,14 +29,17 @@ phi check my_script.py
 # Audit a folder
 phi check ./src/
 
-# Start the Sovereign Web IDE (Local-First browser interface)
-phi ui
-
 # Generate a Markdown report
 phi report my_script.py --output report.md
 
 # CI/CD strict mode (exit 1 if radiance < 75)
 phi check ./src/ --min-radiance 75
+
+# Freeze the structural state (reference)
+phi snapshot ./src/ --out ref.json
+
+# Watch for silent degradations
+phi veille ./src/ --ref ref.json
 ```
 
 ### Python API
@@ -82,20 +85,23 @@ rapport_markdown("my_script.py", sortie="report.md")
 
 ## 🧭 Command Stability Matrix
 
-| Command | Stability | Purpose | Output / Side-effects |
-|---|---|---|---|
-| `phi check` | **Stable** | Audit radiance for files/folders | Console (Aesthetic v0.1.0) or JSON |
-| `phi ui` | **Stable** | Launch Local-First Web IDE | Starts Uvicorn server + opens browser |
-| `phi report` | **Stable** | Markdown report | Writes `report.md` if `--output` |
-| `phi oracle` | **Stable** | Release gate (radiance + tests) | Console; exits 1 on failure |
-| `phi harvest` | Experimental | AST vectors collection | Writes `.phi/harvest.jsonl` |
-| `phi metadata` | Experimental | Metadata summary & purge (harvest/vault) | Summaries; sanitized JSONL |
-| `phi vault` / `phi graph` / `phi canvas` | Experimental | Vault storage + graph export + Obsidian canvas | Writes under `.phi/` (JSON, DOT/ASCII, `.canvas`) |
-| `phi search` | Experimental | Query the vault | Console/JSON; reads `.phi/vault.jsonl` |
-| `phi seal` / `phi heal` | Experimental | Seal + auto-suture via LLM | May call local LLM (`--url`); writes seal metadata in `.phi/` |
-| `phi spiral` | Experimental | Radiance spiral visualization | Console ASCII only |
+| Command | Stability | Purpose |
+|---|---|---|
+| `phi check` | **Stable** | Audit radiance for files/folders (console, JSON, SARIF) |
+| `phi report` | **Stable** | Markdown report |
+| `phi index` | **Stable** | Project map: symbols, collisions, φ-health |
+| `phi snapshot` | **Stable** | Freeze structural state (dated, MD5-signed reference) |
+| `phi veille` | **Stable** | Detect silent degradations vs reference (`STABLE` / `DÉGRADATION DÉTECTÉE`) |
+| `phi chemins` | **Stable** | Belief map: symbols ranked by posterior — which hole to attack first |
+| `phi oracle` | **Stable** | Release gate (radiance + tests) |
+| `phi sonde` | **Stable** | Run a probe against the codebase |
+| `phi infer` | Experimental | Bayesian inference and self-suture prediction |
+| `phi explorer` | Experimental | Explore the codebase guided by entropy |
+| `phi entropie` | Experimental | Entropy lens measurements |
+| `phi ou-aller` | Experimental | Where to go next: prioritized direction |
+| `phi edit` | Experimental | Edit a file in the phi TUI editor |
 
-**Tip:** keep `phi check`/`phi report`/`phi oracle` in CI. Use experimental commands locally first and pin outputs under `.phi/` in `.gitignore` if not needed in VCS.
+**Tip:** keep `phi check`/`phi report`/`phi oracle` in CI. Use `phi snapshot` + `phi veille` to catch silent regressions between releases.
 
 ---
 
@@ -122,35 +128,21 @@ rapport_markdown("my_script.py", sortie="report.md")
   ⚠  SUTURES IDENTIFIED (2):
   🟡 Line 18 [LILITH] : Nested loop (depth 2). Consider a helper function.
      >> for j in range(b):
-  🔵 Line 67 [SOUVERAINETE] : 'load_data' receives 6 arguments. Encapsulate in an object.
+  🟢 Line 67 [LILITH] : 'load_data' receives 6 arguments. Encapsulate in an object.
      >> def load_data(path, sep, enc, cols, dtype, na):
 ```
 
 ---
 
-## 🚀 Phidélia Cyber Station (Web IDE)
+## 🛡 La Veille — the instrument never lies silently
 
-`phi-complexity` dispose maintenant (via les dépendances `[web]`) d'un véritable **IDE Web Local Souverain** (`phi ui`), fonctionnant intégralement en local avec communication WebSockets :
-- **Glassmorphism & Néon** : Design premium ultra-soigné et sans dépendances JS externes (Vanilla JS/CSS).
-- **Monaco Editor** : Le moteur haute-performance derrière VS Code, intégré hors ligne.
-- **WebSocket Streaming** : Dialogue asynchrone direct entre l'orchestrateur Python et le frontend.
+A bad instrument fails silently. `phi-complexity` fails **loudly** :
 
----
+- `phi veille` never reports ✅ on top of a degraded analyzer — it reports `INSTRUMENT DÉGRADÉ` (exit 3) instead of a fake degradation;
+- `phi snapshot` refuses a degraded baseline without `--force`;
+- every development of the instrument carries its **mission justification** (`phi_complexity/mission.py`) : which goal it serves. A module added without justification fails the test suite — mechanically, not by discipline.
 
-## 🚀 CI Innovation Suite (Open Source)
-
-`phi-complexity` embarque maintenant une suite orientée productivité/dev/ops :
-
-- **AI AutoFix Studio** : règles de mutation déterministes pour appliquer rapidement des corrections CI.
-- **Flow Intelligence** : classification dédiée des annulations liées à la concurrence (`WORKFLOW_CONCURRENCY_CANCELLED`).
-- **Runner Sentinel** : détection explicite des blocages de queue runner (`RUNNER_QUEUE_STALL`).
-- **Ops & Engineering Control Plane** : snapshot exportable JSON/Markdown (succès/échecs/cancelled, MTTR, causes racines, tendances).
-- **Dev Productivity Environment** : `.devcontainer` + `Makefile` + commande `make ci-local` pour reproduire le pipeline localement.
-
-```bash
-make setup
-make ci-local
-```
+Trust in the tool is verified trust, never faith : 386 tests, run on every change.
 
 ---
 
@@ -167,15 +159,13 @@ The **Sovereign Coding Rules** are derived from:
 - **The C Book** (Banahan, Brady, Doran) — Scope hermeticity, resource lifecycle
 - **JaCaMo / Multi-Agent Programming** — Agent independence and encapsulation
 
-Full mathematical proof: [docs/MATHEMATIQUES.md](https://github.com/spockoo/phi-complexity/blob/main/docs/MATHEMATIQUES.md)
-
 ---
 
 ## 🏗 Sovereign Architecture
 
 ```
-Zero external dependencies.
-Pure Python standard library (ast, math, json).
+Zero heavy dependencies.
+Pure Python standard library (ast, math, json) + tree-sitter (optional, for non-Python languages).
 ```
 
 ```
@@ -184,22 +174,17 @@ phi_complexity/
 ├── analyseur.py   ← AST fractal dissection
 ├── metriques.py   ← Radiance Index calculation
 ├── rapport.py     ← Console / Markdown / JSON rendering
-└── cli.py         ← phi check / phi report
+├── cli.py         ← phi check / phi report / phi veille / ...
+├── veille.py      ← Silent-degradation detection (STABLE / DÉGRADATION DÉTECTÉE)
+├── mission.py     ← Mission-justification registry (anti-divergence guard)
+├── croyances.py   ← Bayesian belief layer over symbols
+├── sondes.py      ← Probes against the codebase
+└── langs/         ← Multi-language backends (Python native, tree-sitter generic)
 ```
 
 ---
 
 ## 🔗 Integration
-
-### Pre-commit Hook
-```yaml
-repos:
-  - repo: https://github.com/spockoo/phi-complexity
-    rev: v0.1.0
-    hooks:
-      - id: phi-check
-        args: [--min-radiance, "70"]
-```
 
 ### GitHub Action
 ```yaml
@@ -209,14 +194,10 @@ repos:
     phi check ./src/ --min-radiance 75
 ```
 
-### Secrets (`ADMIN_TOKEN`)
-
-- Never commit `ADMIN_TOKEN` in tracked files.
-- Store it in environment variables or GitHub Actions Secrets.
-- Use `.env.example` as a template only:
-
-```dotenv
-ADMIN_TOKEN=
+### Watchdog (snapshot + veille)
+```bash
+phi snapshot ./src/ --out ref.json   # after each audited release
+phi veille ./src/ --ref ref.json     # at the start of the next work session
 ```
 
 ---
@@ -229,28 +210,19 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
-- **v0.2.3 (FastAPI & Phidélia Station) — Actuelle** :
-  - **Lancement de l'IDE Web souverain** : Nouveau point d'entrée `phi ui` qui déploie un orchestrateur local avec frontend premium (Monaco Editor, WebSockets, Vanilla JS).
-  - Restauration minutieuse de l'esthétique absolue de la `v0.1.0` pour les rapports `phi check` dans la console.
-  
+- **v0.11.0 (La Veille) — Actuelle** :
+  - **Garde anti-divergence** : chaque module porte sa justification « but de mission » (`mission.py`) — un module sans justification fait échouer les tests.
+  - **Durcissement** : l'instrument échoue bruyamment (`INSTRUMENT DÉGRADÉ`, exit 3) au lieu de mentir quand l'analyseur manque ; `phi snapshot` refuse une baseline dégradée sans `--force`.
+  - **386 tests verts**, multi-langages (Python natif + tree-sitter générique).
+
+- **v0.2.3 (FastAPI & Phidélia Station)** :
+  - Lancement de l'IDE Web souverain : point d'entrée `phi ui` (orchestrateur local, Monaco Editor, WebSockets).
+  - Restauration de l'esthétique `v0.1.0` pour les rapports `phi check` en console.
+
 - **v0.2.2 (Souveraineté & Cybersécurité)** :
-  - Implémentation du **"Cerveau de Sécurité"** : Moteur de triage mathématique départageant les failles critiques cybernétiques (CWE-79, CWE-89) des simples anomalies architecturales (Variance Lilith, Complexité).
-  - Algorithmes de **Mémoire Fail-Fast** pour `phi_check` optimisant à 100% le temps processeur et la RAM lors des audits anti-mots-interdits.
-  - Conformité CI parfaite garantissant aucune friction entre Windows et Linux (via normalisation PEP8 stricte).
+  - **"Cerveau de Sécurité"** : triage mathématique des failles critiques cybernétiques vs anomalies architecturales.
+  - Algorithmes de **Mémoire Fail-Fast** pour `phi_check`.
 
-- **v0.2.1** : Intégration souveraine du `phi_check` pré-commit natif et de la politique `Quality Gate` pour GitHub Actions. Réparation des métriques de base.
-- **v0.2.0** : Introduction de pydantic pour la vérification de la robustesse, ajouts de structures initiales pour les métriques `Souverainete`.
+- **v0.2.1** : Intégration du `phi_check` pré-commit natif et politique `Quality Gate` pour GitHub Actions. Réparation des métriques de base.
+- **v0.2.0** : Introduction de pydantic pour la robustesse, structures initiales pour les métriques `Souverainete`.
 - **v0.1.0** : Version primaire. Formule mathématique de base implémentée (Lilith, Shannon, Fib, Radiance).
-
----
-
-## 🔒 Sécurité : Activation du contrôle phi-check
-
-Ce projet utilise un contrôle automatique (pré-commit) qui bloque tout ajout de code contenant certains mots ou outils réservés (par exemple des scripts ou outils reconnus de piratage).
-
-**Pour installer et activer le contrôle localement :**
-```sh
-pip install pre-commit
-pre-commit install
-```
-Le contrôle `phi-check` se lance alors automatiquement à chaque commit.

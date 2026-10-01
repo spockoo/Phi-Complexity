@@ -4,19 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phi-complexity"
-version = "0.2.2"
-description = "Code quality metrics based on Golden Ratio (φ) mathematical invariants"
+version = "0.11.0"
+description = "Multi-language code quality metrics based on Golden Ratio (φ) mathematical invariants and adiabatic equilibrium"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Tomy Verreault", email = "Tiloup777@outlook.fr"}
+    {name = "Tomy Verreault", email = "contact@phidelia.dev"}
 ]
 keywords = [
     "code-quality", "complexity", "golden-ratio", "fibonacci",
-    "static-analysis", "ast", "phi", "metrics", "entropy"
+    "static-analysis", "ast", "tree-sitter", "multi-language",
+    "phi", "metrics", "entropy"
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -24,17 +25,17 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.9"
-dependencies = []  # Zero dépendances tierces — Souveraineté totale
+dependencies = []  # Zéro dépendance pour l'audit Python — Souveraineté totale
 
 [project.optional-dependencies]
-notebooks = ["jupyter", "matplotlib", "numpy"]
-web = ["fastapi", "uvicorn", "websockets", "jinja2"]
+multilang = [
+    "tree-sitter>=0.21,<1.0",
+    "tree-sitter-language-pack>=0.13",
+]
 
 [project.scripts]
 phi = "phi_complexity.cli:main"
@@ -48,56 +49,3 @@ Documentation = "https://github.com/spockoo/phi-complexity/blob/main/docs/GUIDE.
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["phi_complexity*"]
-
-[tool.mypy]
-python_version = "3.10"
-strict = true
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_any_generics = true
-check_untyped_defs = true
-no_implicit_reexport = true
-files = ["phi_complexity"]
-exclude = "^(tests|examples)/|^engine\\.py$"
-
-[[tool.mypy.overrides]]
-module = [
-    "matplotlib",
-    "matplotlib.*",
-    "numpy",
-    "IPython",
-    "IPython.*",
-]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = [
-    "fastapi",
-    "fastapi.*",
-    "uvicorn",
-    "jinja2",
-]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "phi_complexity.web.server"
-disallow_untyped_decorators = false
-
-[tool.black]
-target-version = ["py39"]
-line-length = 88
-
-[tool.ruff]
-target-version = "py39"
-line-length = 88
-
-[tool.ruff.lint]
-select = ["E", "F", "W"]
-ignore = ["E501"]  # Line length handled by formatter
-
-[tool.ruff.lint.isort]
-known-first-party = ["phi_complexity"]
-
-[tool.pytest.ini_options]
-addopts = "--cov=phi_complexity --cov-fail-under=89"

@@ -1,13 +1,11 @@
 """
 tests/test_rapport.py — Tests du générateur de rapports Console/Markdown/JSON.
 """
-
 import json
 import os
-import shutil
 import textwrap
 import tempfile
-from phi_complexity import rapport_console, rapport_markdown, rapport_json
+from phi_complexity import auditer, rapport_console, rapport_markdown, rapport_json
 from phi_complexity.rapport import GenerateurRapport
 
 
@@ -54,12 +52,12 @@ class TestGenerateurConsole:
         finally:
             os.unlink(fichier)
 
-    def test_console_contient_header_phi_complexity(self):
-        """L'en-tête doit mentionner PHI-COMPLEXITY."""
+    def test_console_contient_phi_meta(self):
+        """Le pied de page doit mentionner le Morphic Phi Framework."""
         fichier = creer_fichier(CODE_SIMPLE)
         try:
             sortie = rapport_console(fichier)
-            assert "PHI-COMPLEXITY" in sortie
+            assert "φ-Meta" in sortie
         finally:
             os.unlink(fichier)
 
@@ -74,20 +72,12 @@ class TestGenerateurConsole:
 
     def test_barre_radiance_ascii(self):
         """La barre ASCII doit contenir des blocs █."""
-        gen = GenerateurRapport(
-            {
-                "radiance": 75.0,
-                "fichier": "test.py",
-                "statut_gnostique": "EN ÉVEIL ◈",
-                "lilith_variance": 100.0,
-                "shannon_entropy": 2.0,
-                "phi_ratio": 1.7,
-                "phi_ratio_delta": 0.08,
-                "zeta_score": 0.5,
-                "oudjat": None,
-                "annotations": [],
-            }
-        )
+        gen = GenerateurRapport({"radiance": 75.0, "fichier": "test.py",
+                                  "statut_gnostique": "EN ÉVEIL ◈",
+                                  "lilith_variance": 100.0, "shannon_entropy": 2.0,
+                                  "phi_ratio": 1.7, "phi_ratio_delta": 0.08,
+                                  "zeta_score": 0.5, "oudjat": None,
+                                  "annotations": []})
         barre = gen._barre(75.0)
         assert "█" in barre
         assert "░" in barre
@@ -107,8 +97,7 @@ class TestGenerateurMarkdown:
 
     def test_markdown_sauvegarde_fichier(self):
         fichier = creer_fichier(CODE_SIMPLE)
-        dossier = tempfile.mkdtemp()
-        sortie = os.path.join(dossier, "rapport.md")
+        sortie = tempfile.mktemp(suffix=".md")
         try:
             rapport_markdown(fichier, sortie=sortie)
             assert os.path.exists(sortie)
@@ -117,7 +106,8 @@ class TestGenerateurMarkdown:
             assert "RADIANCE" in contenu
         finally:
             os.unlink(fichier)
-            shutil.rmtree(dossier)
+            if os.path.exists(sortie):
+                os.unlink(sortie)
 
     def test_markdown_mentions_phi_meta(self):
         fichier = creer_fichier(CODE_SIMPLE)
@@ -147,16 +137,44 @@ class TestGenerateurJSON:
         try:
             data = json.loads(rapport_json(fichier))
             champs = [
-                "radiance",
-                "lilith_variance",
-                "shannon_entropy",
-                "phi_ratio",
-                "zeta_score",
-                "fibonacci_distance",
-                "nb_fonctions",
-                "annotations",
+                "radiance", "lilith_variance", "shannon_entropy",
+                "phi_ratio", "zeta_score", "fibonacci_distance",
+                "nb_fonctions", "annotations"
             ]
             for champ in champs:
                 assert champ in data, f"Champ manquant : {champ}"
+        finally:
+            os.unlink(fichier)
+
+
+class TestGenerateurSARIF:
+
+    def test_sarif_schema_valide(self):
+        """La sortie SARIF doit respecter le standard OASIS v2.1.0."""
+        from phi_complexity import rapport_sarif
+        fichier = creer_fichier(CODE_AVEC_ANNOTATION)
+        try:
+            sortie = rapport_sarif(fichier)
+            data = json.loads(sortie)
+            assert data["version"] == "2.1.0"
+            assert "$schema" in data
+            assert len(data["runs"]) == 1
+            driver = data["runs"][0]["tool"]["driver"]
+            assert driver["name"] == "phi-complexity"
+            assert len(data["runs"][0]["results"]) >= 1
+            assert data["runs"][0]["results"][0]["ruleId"] == "PHI-LILITH"
+        finally:
+            os.unlink(fichier)
+
+    def test_prescriptions_generees(self):
+        """Vérifie la génération des prescriptions d'équilibre."""
+        from phi_complexity import auditer
+        from phi_complexity.rapport import GenerateurRapport
+        fichier = creer_fichier(CODE_AVEC_ANNOTATION)
+        try:
+            metriques = auditer(fichier)
+            gen = GenerateurRapport(metriques)
+            conseils = gen.prescriptions()
+            assert any("Boucles imbriquées" in c for c in conseils)
         finally:
             os.unlink(fichier)
