@@ -155,7 +155,9 @@ JUSTIFICATIONS = {
                "guidés (jamais de source contenant un sorry), chacun identifié "
                "formellement comme une preuve — un fichier Lean que Lean "
                "tranche (PROUVÉ / RÉFUTÉ avec diagnostic / INDÉCIDÉ). "
-               "L'instrument propose, Lean dispose.",
+               "L'instrument propose, Lean dispose. Extension multi-lemmes "
+               "(2026-10-01) : chaînage borné par l'inégalité de budget "
+               "C(P) ≤ B(S), fragment D vérifiable, INDÉCIDÉ a priori.",
         "sert": "tous",
     },
     "rapport": {

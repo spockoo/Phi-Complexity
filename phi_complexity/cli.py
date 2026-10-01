@@ -235,6 +235,11 @@ Exemples :
                                           "dans le dossier (défaut : supprimés après verdict)")
     chemins_verifiables.add_argument("--format", choices=["console", "json"], default="console",
                                      help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    chemins_verifiables.add_argument("--multi", action="store_true",
+                                     help="Chemins multi-lemmes : chaînage avant guidé, borné par "
+                                          "l'inégalité de budget C(P) ≤ B(S) (fragment D, "
+                                          "INDÉCIDÉ a priori sans build Lean si aucun chemin "
+                                          "admissible)")
 
     ou_aller = subparsers.add_parser("ou-aller",
                                      help="Où aller : liste d'attention ordonnée "
@@ -867,6 +872,8 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         candidats_cablage,
         extraire_entete,
         fichier_verification,
+        realiser_chemins,
+        rendre_chemins,
         rendre_console,
         verdict_lean,
     )
@@ -880,6 +887,28 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
     except Exception:
         REGISTRE_DEFAUT = None
     chemin_registre = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    if getattr(args, "multi", False):
+        try:
+            res = realiser_chemins(
+                args.sorry, dossier, chemin_registre=chemin_registre,
+                max_candidats=getattr(args, "max_candidats", 12),
+                verifier=getattr(args, "verifier", False),
+                timeout_s=getattr(args, "timeout", 600),
+                garder=getattr(args, "garder", False))
+        except Exception as e:
+            print(f"❌ Erreur lors de la recherche de chemins : {e}")
+            return 1
+        if res["statut"] == "INTROUVABLE":
+            if getattr(args, "format", "console") == "json":
+                print(json.dumps(res, indent=2, ensure_ascii=False))
+            else:
+                print(rendre_chemins(res))
+            return 2
+        if getattr(args, "format", "console") == "json":
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            print(rendre_chemins(res))
+        return 0
     try:
         res = candidats_cablage(
             args.sorry, dossier, chemin_registre=chemin_registre,
