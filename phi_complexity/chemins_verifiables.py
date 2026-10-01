@@ -58,6 +58,18 @@ class DeclarationProuvee:
     noms_lieurs: list     # noms seuls, ex. ["ν", "hν", "data"]
     conclusion: str
     a_sorry: bool = False
+    #: Nom fully-qualified (namespaces englobants) pour l'émission Lean.
+    #: `nom` reste le nom court (affichage, raisons, JSON).
+    nom_qualifie: str = ""
+    #: Commandes `open` au niveau du fichier du module source : le
+    #: squelette les rejoue pour que les identifiants courts résolvent
+    #: comme dans le module d'origine.
+    opens: list = field(default_factory=list)
+
+
+def _nom_lean(d: DeclarationProuvee) -> str:
+    """Nom à émettre dans le code Lean : fully-qualified quand connu."""
+    return d.nom_qualifie or d.nom
 
 
 @dataclass
@@ -141,7 +153,7 @@ def _noms_groupe(contenu: str) -> list:
         elif c in ")]}":
             prof = max(0, prof - 1)
         elif c == ":" and prof == 0:
-            return re.findall(r"[A-Za-z_ν][A-Za-z0-9_'ν]*", contenu[:i])
+            return re.findall(_IDENTIFIANT, contenu[:i])
     return []
 
 
@@ -184,6 +196,61 @@ def analyser_entete(entete: str, nom: str) -> tuple[list, list, str]:
     return groupes, noms, conclusion
 
 
+def _piles_namespaces(texte: str) -> list:
+    """Événements `namespace`/`section`/`end` : [(ligne, sens, quoi)].
+
+    `+` = entrée (`namespace` ou `section`), `-` = sortie (`end` nu =
+    un niveau, `end X` = jusqu'à X inclus). Seuls les `namespace`
+    qualifient les noms ; les `section` sont suivies pour ne pas
+    confondre leurs `end` avec des fins de namespace.
+    """
+    evs = []
+    for m in re.finditer(
+            r"^(namespace|section)\s+([A-Za-z0-9_.']+)", texte, re.M):
+        evs.append((texte[:m.start()].count("\n") + 1, "+",
+                    (m.group(1), m.group(2))))
+    for m in re.finditer(r"^end\s*([A-Za-z0-9_.']+)?\s*$", texte, re.M):
+        evs.append((texte[:m.start()].count("\n") + 1, "-",
+                    m.group(1) or ""))
+    return sorted(evs)
+
+
+def _namespaces_de_ligne(evs: list, num: int) -> list:
+    """Pile des namespaces englobant la ligne `num` (sections exclues)."""
+    pile: list = []
+    for ligne, sens, quoi in evs:
+        if ligne > num:
+            break
+        if sens == "+":
+            pile.append(quoi)  # (genre, nom)
+        elif isinstance(quoi, str) and quoi:
+            while pile and pile[-1][1] != quoi:
+                pile.pop()
+            if pile:
+                pile.pop()
+        elif pile:
+            pile.pop()
+    return [nom for genre, nom in pile if genre == "namespace"]
+
+
+def _opens_fichier(texte: str) -> list:
+    """Commandes `open` au niveau du fichier (sans `in`), dans l'ordre.
+
+    Le squelette généré reproduit le contexte d'ouverture des modules
+    sources : un identifiant court comme `Integrable` (sous
+    `open MeasureTheory`) ne résout que si l'ouverture est rejouée.
+    """
+    opens, vus = [], set()
+    for m in re.finditer(r"^open\s+([^\n]+)$", texte, re.M):
+        corps = m.group(1).strip()
+        if not corps or re.search(r"(?<![\w'])in(?![\w'])", corps):
+            continue  # `open X in <commande>` : portée locale, non rejouable
+        if corps not in vus:
+            vus.add(corps)
+            opens.append("open " + corps)
+    return opens
+
+
 def declarations_dans_fichier(dossier: str, chemin: str
                               ) -> list[DeclarationProuvee]:
     """Toutes les déclarations theorem/lemma d'un fichier, marquées sorry."""
@@ -199,16 +266,23 @@ def declarations_dans_fichier(dossier: str, chemin: str
         marques.append((num, m.group(1), m.group(2), m.group(0)))
     lignes_sorry = sorted(s.ligne for s in sorrys_dans_fichier(chemin))
     module = module_depuis_fichier(dossier, chemin)
+    opens = _opens_fichier(texte)
+    # pile des namespaces au fil des déclarations (ordre des lignes)
+    evs = _piles_namespaces(texte)
     res: list[DeclarationProuvee] = []
     for i, (num, genre, nom, _) in enumerate(marques):
+        pile = _namespaces_de_ligne(evs, num)
+        qualifie = nom if "." in nom else ".".join(pile + [nom])
         fin = marques[i + 1][0] if i + 1 < len(marques) else 10 ** 9
         a_sorry = any(num <= ls < fin for ls in lignes_sorry)
         entete = extraire_entete(nom, texte) or ""
         groupes, noms, conclusion = analyser_entete(entete, nom)
         res.append(DeclarationProuvee(
             module=module, fichier=os.path.basename(chemin), nom=nom,
+            nom_qualifie=qualifie,
             genre=genre, ligne=num, entete=entete, lieurs=groupes,
-            noms_lieurs=noms, conclusion=conclusion, a_sorry=a_sorry))
+            noms_lieurs=noms, conclusion=conclusion, a_sorry=a_sorry,
+            opens=list(opens)))
     return res
 
 
@@ -312,6 +386,7 @@ def _contexte_cablage(sorry: str, dossier: str,
         "module_sorry": module_sorry,
         "ent_sorry": ent_sorry,
         "enonce_sorry": ent_sorry.entete if ent_sorry else "",
+        "opens_sorry": ent_sorry.opens if ent_sorry else [],
         "noms_sorry": noms_sorry,
         "concl_sorry": concl_sorry,
         "tete_sorry": tete_sorry,
@@ -353,7 +428,7 @@ def _squelette_mono(d: DeclarationProuvee, noms_sorry: set) -> str:
     """Squelette mono-source historique : lieurs du sorry par nom, `?_` sinon."""
     args = [n if n in noms_sorry else "?_"
             for n in d.noms_lieurs]
-    return f"refine {d.nom}" + (" " + " ".join(args) if args else "")
+    return f"refine {_nom_lean(d)}" + (" " + " ".join(args) if args else "")
 
 
 def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = None,
@@ -400,6 +475,13 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
 # (formulation validée 2026-10-01 — FORMULATION_CHEMINS_MULTI_LEMMES.md)
 # ─────────────────────────────────────────────────────────────
 
+#: Identifiant Lean (noms de lieurs, jetons) : lettres Unicode incluses —
+#: les indices comme `h₁`, `sol₂` sont des identifiants à part entière, pas
+#: `h` / `sol` suivis de bruit. `[^\W\d]` = lettre Unicode ou `_`
+#: (les chiffres décimaux `\d` sont exclus au début ; les chiffres
+#: souscrits `₁₂`, catégorie « Number, other », sont conservés).
+_IDENTIFIANT = r"[^\W\d][\w']*"
+
 #: Mots-clés Lean ignorés par la mesure de complexité Φ.
 _MOTS_CLES_PHI = frozenset(
     "theorem lemma def example import open namespace end variable variables "
@@ -417,7 +499,7 @@ _TACTIQUES_RECHERCHE = (
 
 def _jetons_identifiants(texte: str) -> list:
     """Jetons identifiants d'un texte, mots-clés Lean exclus."""
-    return [t for t in re.findall(r"[A-Za-z_ν][A-Za-z0-9_'ν]*", texte)
+    return [t for t in re.findall(_IDENTIFIANT, texte)
             if t not in _MOTS_CLES_PHI]
 
 
@@ -606,6 +688,16 @@ def _args_etape(d: DeclarationProuvee, frontiere: list,
     return args, deballages
 
 
+def _sans_univers_explicites(texte: str) -> str:
+    """Retire les annotations d'univers `.{u}` d'un type recopié.
+
+    Le `have` généré n'a pas les `universe u` du module source : sans
+    retrait, `u` serait un identifiant inconnu. Lean infère les niveaux
+    à l'élaboration ; le retrait ne change pas le sens du type.
+    """
+    return re.sub(r"\.\{[^{}]*\}", "", texte or "")
+
+
 def _type_etape(d: DeclarationProuvee, args: list) -> str:
     """Type explicite d'une étape `have` : conclusion du lemme avec les
     noms de lieurs substitués par les arguments réels (`?_` → `_`,
@@ -614,10 +706,11 @@ def _type_etape(d: DeclarationProuvee, args: list) -> str:
     for nom, arg in zip(d.noms_lieurs, args):
         table[nom] = "_" if arg == "?_" else arg
     if not table:
-        return d.conclusion
-    return re.sub(r"[A-Za-z_ν][A-Za-z0-9_'ν]*",
-                  lambda m: table.get(m.group(0), m.group(0)),
-                  d.conclusion)
+        return _sans_univers_explicites(d.conclusion)
+    return _sans_univers_explicites(re.sub(
+        _IDENTIFIANT,
+        lambda m: table.get(m.group(0), m.group(0)),
+        d.conclusion))
 
 
 def _noms_h(n: int, interdits: set) -> list:
@@ -651,9 +744,11 @@ def _squelette_chaine(lemmes: list, lieurs_sorry: list) -> str:
     for i, d in enumerate(lemmes):
         args, deballages = _args_etape(d, frontiere, vus_choix)
         for nom_d, type_d, terme_d in deballages:
-            lignes.append(f"have {nom_d} : {type_d} := {terme_d}")
+            lignes.append(
+                f"have {nom_d} : {_sans_univers_explicites(type_d)}"
+                f" := {terme_d}")
             frontiere.append((nom_d, type_d))
-        appel = d.nom + (" " + " ".join(args) if args else "")
+        appel = _nom_lean(d) + (" " + " ".join(args) if args else "")
         if i < len(lemmes) - 1:
             t_i = _type_etape(d, args)
             lignes.append(f"have {noms_h[i]} : {t_i} := {appel}")
@@ -676,9 +771,15 @@ class Chemin:
 
 
 def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
-            max_candidats: int = 12) -> dict:
+            max_candidats: int = 12, max_prefixes: int = 20000) -> dict:
     """Chemins multi-lemmes admissibles vers un sorry, par chaînage avant
     GUIDÉ et borné par l'inégalité de budget.
+
+    `max_prefixes` borne le travail de la recherche elle-même (R4) : la
+    file est ordonnée par coût croissant, donc les premiers préfixes
+    explorés sont les moins chers — arrêter au-delà ne sacrifie que la
+    queue exhaustive, jamais les meilleurs candidats. Le dépassement est
+    signalé honnêtement (`recherche_bornee`).
 
     Retourne {"statut": "TROUVÉ", "chemins": [...], "budget": B, ...} ou
     {"statut": "INDÉCIDÉ", "a_priori": True, ...} quand aucun chemin
@@ -709,14 +810,15 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
     tete_sorry = ctx["tete_sorry"]
     types_sorry = ctx["types_sorry"]
     concl_sorry = ctx["concl_sorry"]
-    phi_par_nom = {d.nom: complexite_declaration(d) for d, _, _ in scored}
+    phi_par_nom = {_nom_lean(d): complexite_declaration(d)
+                   for d, _, _ in scored}
 
     admissibles: list[Chemin] = []
     prefixes_explores = 0
 
     def _fabriquer(lemmes: list, scores: list, raisons: list,
                    squelette: str) -> Chemin:
-        phis = [phi_par_nom[d.nom] for d in lemmes]
+        phis = [phi_par_nom[_nom_lean(d)] for d in lemmes]
         cout = cout_chemin(phis, phibar)
         raisons_ch = list(raisons)
         raisons_ch.append(
@@ -733,41 +835,54 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
     for d, score, raisons in scored:
         if not _connecte_but(d, tete_sorry, types_sorry, concl_sorry):
             continue
-        if cout_chemin([phi_par_nom[d.nom]], phibar) <= budget:
+        if cout_chemin([phi_par_nom[_nom_lean(d)]], phibar) <= budget:
             admissibles.append(_fabriquer(
                 [d], [score], list(raisons),
                 _squelette_mono(d, ctx["noms_sorry"])))
 
     # n ≥ 2 : chaînage avant par coût croissant, élagué par le budget.
     # Chaque préfixe exploré satisfait déjà C(préfixe) ≤ B(S) : la recherche
-    # elle-même est bornée, pas filtrée après coup.
+    # elle-même est bornée, pas filtrée après coup. `max_prefixes` borne
+    # en plus le TRAVAIL (R4) : la file étant ordonnée par coût croissant,
+    # les préfixes au-delà de la borne sont les plus chers — les arrêter
+    # ne sacrifie que la queue exhaustive.
     file = []  # (cout, -score, compteur, préfixe, frontière)
     compteur = itertools.count()
     vus = set()
+    cache_etape: dict = {}  # (nom_dernier, nom_candidat) -> connecte ?
     for d, score, raisons in scored:
         if not _connecte_premier_pas(d, lieurs_sorry):
             continue
-        c = cout_chemin([phi_par_nom[d.nom]], phibar)
+        c = cout_chemin([phi_par_nom[_nom_lean(d)]], phibar)
         if c > budget or n_max < 2:
             continue
         front = (list(lieurs_sorry)
                  + [(f"h0_{d.nom}", d.conclusion)])
         heapq.heappush(file, (c, -score, next(compteur),
                               [(d, score, list(raisons))], front))
+    recherche_bornee = False
     while file:
+        if prefixes_explores >= max_prefixes:
+            recherche_bornee = True
+            break
         c, neg_s, _, prefixe, frontiere = heapq.heappop(file)
         prefixes_explores += 1
         if len(prefixe) >= n_max:
             continue
-        noms_vus = {d.nom for d, _, _ in prefixe}
+        noms_vus = {_nom_lean(d) for d, _, _ in prefixe}
         dernier = prefixe[-1][0]
         for d, score, raisons in scored:
-            if d.nom in noms_vus:
+            if _nom_lean(d) in noms_vus:
                 continue  # pas de cycles
-            if not _connecte_etape(d, dernier.conclusion):
+            cle = (_nom_lean(dernier), _nom_lean(d))
+            conn = cache_etape.get(cle)
+            if conn is None:
+                conn = _connecte_etape(d, dernier.conclusion)
+                cache_etape[cle] = conn
+            if not conn:
                 continue
-            phis_pre = [phi_par_nom[x.nom] for x, _, _ in prefixe]
-            phis_pre.append(phi_par_nom[d.nom])
+            phis_pre = [phi_par_nom[_nom_lean(x)] for x, _, _ in prefixe]
+            phis_pre.append(phi_par_nom[_nom_lean(d)])
             c2 = cout_chemin(phis_pre, phibar)
             if c2 > budget:
                 continue  # élagage par l'inégalité
@@ -783,7 +898,7 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
                         x.nom for x in lemmes2)],
                     _squelette_chaine(lemmes2, lieurs_sorry))
                 admissibles.append(ch)
-            sig = tuple(x.nom for x in lemmes2)
+            sig = tuple(_nom_lean(x) for x in lemmes2)
             if sig in vus:
                 continue
             vus.add(sig)
@@ -807,6 +922,8 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
             "budget": bud,
             "candidats_pool": len(scored),
             "prefixes_explores": prefixes_explores,
+            "recherche_bornee": recherche_bornee,
+            "borne_prefixes": max_prefixes,
             "chemins": [],
             "admissibles_total": 0,
         }
@@ -814,15 +931,19 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
         "statut": "TROUVÉ",
         "sorry": sorry,
         "module_sorry": ctx["module_sorry"],
+        "opens_sorry": ctx["opens_sorry"],
         "enonce_sorry": ctx["enonce_sorry"],
         "budget": bud,
         "candidats_pool": len(scored),
         "prefixes_explores": prefixes_explores,
+        "recherche_bornee": recherche_bornee,
+        "borne_prefixes": max_prefixes,
         "admissibles_total": total,
         "chemins": [
             {"noms": ch.noms,
              "longueur": len(ch.noms),
              "modules": [d.module for d in ch.lemmes],
+             "opens": sorted({o for d in ch.lemmes for o in d.opens}),
              "cout": ch.cout,
              "budget": budget,
              "inegalite": f"{ch.cout:g} ≤ {budget:g}",
@@ -837,14 +958,26 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
 
 
 def fichier_verification_chemin(sorry: str, chemin: dict, module_sorry: str,
-                                lieurs_sorry: list, conclusion_sorry: str
+                                lieurs_sorry: list, conclusion_sorry: str,
+                                opens_sorry: list | None = None
                                 ) -> str:
     """Fichier Lean formellement identifiable comme preuve (ou non) pour un
-    chemin multi-lemmes : imports, `example`, squelette du fragment D."""
+    chemin multi-lemmes : imports, `example`, squelette du fragment D.
+
+    Les `open` des modules sources (et du module du sorry) sont rejoués
+    après les imports : les identifiants courts recopiés (`Integrable`
+    sous `open MeasureTheory`, …) résolvent comme à l'origine. Les
+    annotations d'univers `.{u}` recopiées sont retirées (pas de
+    `universe u` dans le fichier généré ; Lean infère).
+    """
     imports = [module_sorry]
     for m in chemin["modules"]:
         if m not in imports:
             imports.append(m)
+    opens: list = []
+    for o in (opens_sorry or []) + chemin.get("opens", []):
+        if o not in opens:
+            opens.append(o)
     entete = ("-- Chemin vérifiable généré par phi-complexity "
               "(chemins multi-lemmes, fragment D).")
     lignes = [
@@ -857,10 +990,15 @@ def fichier_verification_chemin(sorry: str, chemin: dict, module_sorry: str,
         "",
     ]
     lignes += [f"import {m}" for m in imports]
+    if opens:
+        lignes += [""]
+        lignes += opens
+    groupes_nus = [_sans_univers_explicites(g) for g in lieurs_sorry]
+    concl_nue = _sans_univers_explicites(conclusion_sorry)
     lignes += [
         "",
-        f"example {' '.join(lieurs_sorry)} :",
-        f"    {conclusion_sorry} := by",
+        f"example {' '.join(groupes_nus)} :",
+        f"    {concl_nue} := by",
         f"  {chemin['squelette']}",
         "",
     ]
@@ -870,20 +1008,23 @@ def fichier_verification_chemin(sorry: str, chemin: dict, module_sorry: str,
 def realiser_chemins(sorry: str, dossier: str,
                      chemin_registre: str | None = None,
                      max_candidats: int = 12, verifier: bool = False,
-                     timeout_s: int = 600, garder: bool = False) -> dict:
+                     timeout_s: int = 600, garder: bool = False,
+                     max_prefixes: int = 20000) -> dict:
     """Orchestration : chemins admissibles + (optionnel) verdicts Lean.
 
     R4 comme propriété : chaque soumission à Lean est PRÉCÉDÉE de l'archive
     de sa preuve d'admissibilité {chemin, coût, budget, inégalité}.
     """
-    res = chemins(sorry, dossier, chemin_registre, max_candidats)
+    res = chemins(sorry, dossier, chemin_registre, max_candidats,
+                  max_prefixes)
     res["archive"] = []
     if res["statut"] != "TROUVÉ" or not verifier:
         return res
     groupes, _, conclusion = analyser_entete(res["enonce_sorry"], sorry)
     for i, ch in enumerate(res["chemins"]):
         contenu = fichier_verification_chemin(
-            sorry, ch, res["module_sorry"], groupes, conclusion)
+            sorry, ch, res["module_sorry"], groupes, conclusion,
+            opens_sorry=res.get("opens_sorry"))
         chemin_v = os.path.join(
             dossier, f"Verification_{sorry}_chemin{i}.lean")
         entree = {"chemin": ch["noms"], "cout": ch["cout"],
@@ -922,11 +1063,14 @@ def rendre_chemins(res: dict, limite: int = 12) -> str:
             f"pool : {res['candidats_pool']} lemme(s), "
             f"{res['prefixes_explores']} préfixe(s) exploré(s).")
     b = res["budget"]
+    borne = (" [recherche bornée : "
+             f"{res['prefixes_explores']}/{res['borne_prefixes']} préfixes]"
+             if res.get("recherche_bornee") else "")
     lignes = [
         f"✅ Sorry '{res['sorry']}' ({res['module_sorry']}) : "
         f"{res['admissibles_total']} chemin(s) admissible(s) "
         f"({res['prefixes_explores']} préfixe(s) exploré(s), "
-        f"B={b['budget']:g})."]
+        f"B={b['budget']:g}){borne}."]
     for i, ch in enumerate(res["chemins"][:limite], 1):
         lignes.append(
             f"  [{i}] {' → '.join(ch['noms'])} "
