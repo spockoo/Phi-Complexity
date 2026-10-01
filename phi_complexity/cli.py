@@ -190,6 +190,23 @@ Exemples :
                             "section `entropie` par nœud ; défaut : "
                             "~/workspace/lean-navier-stokes)")
 
+    piste_sorry = subparsers.add_parser("piste-sorry",
+                                        help="Piste d'un sorry : inventaire "
+                                             "rigoureux, graphe d'imports et "
+                                             "chantiers du registre — le chemin "
+                                             "depuis n'importe quelle complexité "
+                                             "Lean 4")
+    piste_sorry.add_argument("dossier",
+                             help="Dossier du projet Lean 4 à explorer")
+    piste_sorry.add_argument("--sorry", required=True,
+                             help="Nom du sorry à pister (ex. leray_existence)")
+    piste_sorry.add_argument("--registre", default=None,
+                             help="Chemin du registre vivant des hypothèses "
+                                  "(opt-in : sans lui, piste structurelle seule ; "
+                                  "défaut : REGISTRE_HYPOTHESES_20260929.md du dépôt lean)")
+    piste_sorry.add_argument("--format", choices=["console", "json"], default="console",
+                             help="Format de sortie (console lisible, ou json pour les agents/jq)")
+
     ou_aller = subparsers.add_parser("ou-aller",
                                      help="Où aller : liste d'attention ordonnée "
                                           "par coût de booléanisation décroissant "
@@ -778,6 +795,36 @@ def _executer_explorer(args: argparse.Namespace) -> int:
     return 0
 
 
+def _executer_piste_sorry(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'piste-sorry'.
+
+    Lecture seule. Le registre est opt-in : sans lui (ou chemin invalide),
+    la piste structurelle (inventaire + imports) est produite seule —
+    jamais d'échec sur une machine sans la chaîne Lean.
+    """
+    import json
+    from .piste_sorry import piste, rendre_console
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    try:
+        from .sondes import REGISTRE_DEFAUT
+    except Exception:
+        REGISTRE_DEFAUT = None
+    chemin_registre = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    try:
+        resultat = piste(args.sorry, dossier, chemin_registre=chemin_registre)
+    except Exception as e:
+        print(f"❌ Erreur lors du pistage : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(resultat, indent=2, ensure_ascii=False))
+    else:
+        print(rendre_console(resultat))
+    return 0
+
+
 def _executer_entropie(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'entropie' : H et ΔH en bits sur la Sonde B.
 
@@ -854,6 +901,10 @@ def main():
     if args.commande == "sonde":
         # La sonde lit le registre vivant : court-circuit avant la collecte.
         sys.exit(_executer_sonde(args))
+
+    if args.commande == "piste-sorry":
+        # La piste lit le dossier Lean (+ registre opt-in) : court-circuit.
+        sys.exit(_executer_piste_sorry(args))
 
     if args.commande == "entropie":
         # La lentille entropique lit registre + croyances : court-circuit.

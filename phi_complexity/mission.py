@@ -143,6 +143,13 @@ JUSTIFICATIONS = {
                "croyance montre sa chaîne, pas de boîte noire.",
         "sert": "instrument",
     },
+    "piste_sorry": {
+        "but": "Piste d'un sorry à travers Lean 4 : inventaire rigoureux "
+               "(commentaires et chaînes exclus), graphe d'imports, chantiers "
+               "du registre aux statuts typés — le chemin depuis n'importe "
+               "quelle complexité vers la décharge.",
+        "sert": "tous",
+    },
     "rapport": {
         "but": "Restitution (console/Markdown) : l'instrument montre, "
                "il n'automatise pas le jugement.",
