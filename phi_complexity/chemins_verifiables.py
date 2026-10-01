@@ -558,6 +558,404 @@ def _squelette_mono(d: DeclarationProuvee, noms_sorry: set) -> str:
     return f"refine {_nom_lean(d)}" + (" " + " ".join(args) if args else "")
 
 
+# ─────────────────────────────────────────────────────────────
+# Synthèse contrôlée de structures (chantier 2026-10-01)
+#
+# Discipline (docs/INVENTAIRE_SYNTHESE_ENERGY_IDENTITY.md) :
+#   1. Dirigée par le type : on ne synthétise que le type exact du trou.
+#   2. Ordre d'essai : (a) variable du contexte de type équivalent ;
+#      (b) projection d'un champ de structure (1 niveau) ;
+#      (c) projection d'une conjonction via dépliage d'une def
+#      (avec réordonnancement explicite des lieurs si besoin).
+#   3. Jamais d'invention : champs et corps lus dans le corpus, pas en dur.
+#   4. Échec propre : None → le trou reste `?_` (Lean tranche).
+# Limite honnête : équivalence syntaxique après normalisation + dépliage
+# des defs simples — pas de vérification defeq complète (c'est le rôle
+# de Lean à la vérification).
+# ─────────────────────────────────────────────────────────────
+
+#: Profondeur maximale de dépliage des defs dans la comparaison de types.
+_PROF_DEPLIAGE = 4
+
+_cache_structures: dict = {}
+_cache_defs: dict = {}
+
+
+def _structures_corpus(dossier: str) -> dict:
+    """nom structure → ([(param, type)], [(champ, type)]) — parsé du corpus."""
+    if dossier in _cache_structures:
+        return _cache_structures[dossier]
+    res: dict = {}
+    for racine, _, fichiers in os.walk(dossier):
+        if ".lake" in racine:
+            continue
+        for fn in fichiers:
+            if not fn.endswith(".lean"):
+                continue
+            try:
+                with open(os.path.join(racine, fn), encoding="utf-8") as f:
+                    lignes = f.readlines()
+            except Exception:
+                continue
+            i = 0
+            while i < len(lignes):
+                m = re.match(r"^structure\s+(\w+)(.*)\bwhere\b\s*$",
+                             lignes[i].rstrip("\n"))
+                if m:
+                    nom, reste = m.group(1), m.group(2)
+                    params = re.findall(r"\(([^():]+):([^()]*)\)", reste)
+                    champs = []
+                    i += 1
+                    while i < len(lignes):
+                        lm = re.match(r"^  (\w+)\s*:\s*(.+?)\s*$",
+                                      lignes[i].rstrip("\n"))
+                        if lm:
+                            champs.append((lm.group(1),
+                                           _normaliser_type(lm.group(2))))
+                        elif lignes[i].startswith(" ") or \
+                                lignes[i].strip().startswith("/-"):
+                            pass
+                        else:
+                            break
+                        i += 1
+                    if champs:
+                        res[nom] = (params, champs)
+                    continue
+                i += 1
+    _cache_structures[dossier] = res
+    return res
+
+
+def _defs_corps(dossier: str) -> dict:
+    """nom def → corps brut — pour le dépliage en comparaison de types."""
+    if dossier in _cache_defs:
+        return _cache_defs[dossier]
+    res: dict = {}
+    for racine, _, fichiers in os.walk(dossier):
+        if ".lake" in racine:
+            continue
+        for fn in fichiers:
+            if not fn.endswith(".lean"):
+                continue
+            try:
+                with open(os.path.join(racine, fn), encoding="utf-8") as f:
+                    texte = f.read()
+            except Exception:
+                continue
+            # def Nom params... : Type := corps (corps sur une ou plusieurs
+            # lignes ; on accumule jusqu'à équilibre des parenthèses).
+            # On repère « ^def Nom » puis le « := » qui ouvre le corps
+            # (la signature peut contenir des « : » de typage).
+            for m in re.finditer(r"^def\s+(\w+)\b", texte, re.M):
+                nom = m.group(1)
+                if nom in res:
+                    continue
+                j = texte.find(":=", m.end())
+                if j < 0:
+                    continue
+                # le := doit être avant la prochaine commande top-level
+                entre = texte[m.end():j]
+                if re.search(r"^(theorem|lemma|def|structure|abbrev|instance|class)\b",
+                             entre, re.M):
+                    continue
+                j += 2
+                # Accumulation par lignes : le corps se termine à la
+                # prochaine commande top-level (pas au premier ∧ !).
+                lignes_corps = []
+                while j < len(texte):
+                    fin_ligne = texte.find("\n", j)
+                    if fin_ligne < 0:
+                        fin_ligne = len(texte)
+                    ligne = texte[j:fin_ligne]
+                    if re.match(r"^(theorem|lemma|def|abbrev|structure|"
+                                r"instance|class|end|namespace|open|import|"
+                                r"variable|variables|/--|--)\b",
+                                ligne.strip()):
+                        break
+                    lignes_corps.append(ligne)
+                    j = fin_ligne + 1
+                    if sum(len(l) for l in lignes_corps) > 4000:
+                        break
+                corps_brut = "\n".join(lignes_corps)
+                # commentaire inline en fin de corps (« /-- doc », « -- note »)
+                corps_brut = re.split(r"\s/--", corps_brut, maxsplit=1)[0]
+                corps_brut = re.split(r"\s--(?![->])", corps_brut, maxsplit=1)[0]
+                res[nom] = _normaliser_type(corps_brut)
+    _cache_defs[dossier] = res
+    return res
+
+
+def _deplier(t: str, defs: dict, prof: int = 0) -> str:
+    """Remplace les noms de defs simples par leur corps (borné)."""
+    if prof >= _PROF_DEPLIAGE or not t:
+        return _normaliser_type(t)
+    out = _normaliser_type(t)
+    for nom, corps in defs.items():
+        if not corps or len(corps) > 2000:
+            continue
+        # mot entier, pas de récursion directe ; le corps source porte déjà
+        # ses propres parenthèses — pas de wrapping ajouté (il casserait
+        # l'égalité syntaxique en comparaison de types).
+        if re.search(rf"(?<![\w'])({re.escape(nom)})(?![\w'])", out):
+            if nom in corps:
+                continue
+            out = re.sub(rf"(?<![\w'])({re.escape(nom)})(?![\w'])",
+                         corps, out)
+    if out != _normaliser_type(t):
+        return _deplier(out, defs, prof + 1)
+    return out
+
+
+def _types_equivalents(t1: str, t2: str, defs: dict) -> bool:
+    """Égalité syntaxique après normalisation + dépliage des defs."""
+    if not t1 or not t2:
+        return False
+    return _deplier(t1, defs) == _deplier(t2, defs)
+
+
+def _substituer(t: str, subst: dict) -> str:
+    """Remplace les noms de lieurs par leurs termes (mots entiers).
+
+    Sans parenthésage ajouté : les termes substitués sont atomiques
+    (`sol.u`, `ν`) et le parenthésage casserait l'égalité syntaxique
+    en comparaison de types.
+    """
+    out = t
+    for nom, terme in subst.items():
+        # pas après un point (s.u ne doit pas devenir s.s.u)
+        out = re.sub(rf"(?<![\w'.])({re.escape(nom)})(?![\w'])",
+                     terme, out)
+    return _normaliser_type(out)
+
+
+def _chemin_projection_conjonction(idx: int, total: int) -> str:
+    """Chemin de projection pour la idx-ème partie (1-indexée) d'une
+    conjonction à `total` parties. Lean imbrique les `And` à droite :
+    `A ∧ B ∧ C ∧ D` = `And A (And B (And C D))`, donc les projections sont
+    `.1`, `.2.1`, `.2.2.1`, `.2.2.2` — jamais `.2`, `.3`, `.4` plats
+    (défaut nommé par Lean le 2026-10-01 sur energy_identity)."""
+    if idx == 1:
+        return ".1"
+    if idx == total:
+        return ".2" * (total - 1)
+    return ".2" * (idx - 1) + ".1"
+
+
+def _couper_conjonction(corps: str) -> list:
+    """Découpe un corps en conjonctions de top-niveau (« A ∧ B ∧ C »)."""
+    parts, prof, cur = [], 0, []
+    i = 0
+    while i < len(corps):
+        c = corps[i]
+        if c in "([{":
+            prof += 1
+            cur.append(c)
+        elif c in ")]}":
+            prof = max(0, prof - 1)
+            cur.append(c)
+        elif prof == 0 and corps[i:i + 1] == "∧":
+            parts.append(_normaliser_type("".join(cur)))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    parts.append(_normaliser_type("".join(cur)))
+    return [p for p in parts if p]
+
+
+def _couper_virgule_top(texte: str) -> tuple:
+    """Coupe « bindeurs , corps » à la première virgule de top-niveau."""
+    prof = 0
+    for i, c in enumerate(texte):
+        if c in "([{":
+            prof += 1
+        elif c in ")]}":
+            prof = max(0, prof - 1)
+        elif c == "," and prof == 0:
+            return texte[:i], texte[i + 1:]
+    return texte, ""
+
+
+def _denuder(t: str) -> str:
+    """Retire les parenthèses externes redondantes : « (∀ x, P) » → « ∀ x, P »."""
+    t = _normaliser_type(t)
+    while len(t) >= 2 and t[0] == "(" and t[-1] == ")":
+        prof = 0
+        ok = True
+        for i, c in enumerate(t):
+            if c == "(":
+                prof += 1
+            elif c == ")":
+                prof -= 1
+            if prof == 0 and i < len(t) - 1:
+                ok = False
+                break
+        if not ok:
+            break
+        t = _normaliser_type(t[1:-1])
+    return t
+
+
+def _analyse_forall(t: str) -> tuple:
+    """Découpe « ∀ b1, ∀ b2, CORPS » → ([(nom, type|None)], corps).
+
+    Gère « ∀ x », « ∀ x i », « ∀ i : Fin 3 », « ∀ t ∈ S » (→ t, puis preuve
+    `t ∈ S` marquée « tₘ »). Retourne ([], t) si pas de ∀ de tête.
+    """
+    lieurs = []
+    reste = _denuder(t)
+    while True:
+        m = re.match(r"^(∀|forall)\s+(.+)$", reste)
+        if not m:
+            break
+        bindeurs, corps = _couper_virgule_top(m.group(2))
+        if not corps:
+            break
+        bindeurs = _normaliser_type(bindeurs)
+        # « t ∈ S » ?
+        mi = None
+        prof = 0
+        for i, c in enumerate(bindeurs):
+            if c in "([{":
+                prof += 1
+            elif c in ")]}":
+                prof = max(0, prof - 1)
+            elif c == "∈" and prof == 0:
+                mi = i
+                break
+        if mi is not None:
+            nom = _normaliser_type(bindeurs[:mi])
+            ens = _normaliser_type(bindeurs[mi + 1:])
+            lieurs.append((nom, None))
+            lieurs.append((nom + "ₘ", f"{nom} ∈ {ens}"))
+        else:
+            mc = re.match(r"^(.+?)\s*:\s*(.+)$", bindeurs)
+            if mc:
+                noms = mc.group(1).split()
+                typ = _normaliser_type(mc.group(2))
+                for n in noms:
+                    lieurs.append((_normaliser_type(n), typ))
+            else:
+                for n in bindeurs.split():
+                    lieurs.append((_normaliser_type(n), None))
+        reste = _denuder(corps)
+    return lieurs, reste
+
+
+def _reordonner_lambda(src_lieurs: list, tgt_lieurs: list,
+                       terme: str) -> str | None:
+    """Construit « (fun b1 b2 … => terme a1 a2 …) » quand les lieurs cible
+    sont une permutation de ceux de la source (comparés par noms).
+
+    Les preuves d'appartenance « t ∈ S » (marquées « tₘ » par
+    `_analyse_forall`) sont liées comme `h_t` dans les deux ordres.
+    """
+    def nom_lie(n: str) -> str:
+        return f"h_{n[:-1]}" if n.endswith("ₘ") else n
+    noms_src = sorted(n for n, _ in src_lieurs)
+    noms_tgt = sorted(n for n, _ in tgt_lieurs)
+    if not noms_tgt or noms_src != noms_tgt:
+        return None
+    params = " ".join(nom_lie(n) for n, _ in tgt_lieurs)
+    args = " ".join(nom_lie(n) for n, _ in src_lieurs)
+    return f"(fun {params} => {terme} {args})"
+
+
+def _termes_etendus(contexte: list, structures: dict, subst: dict) -> list:
+    """Contexte + projections de structures à 1 niveau : [(terme, type)].
+
+    Ex. `sol : ClassicalSolution ν` → `sol`, `sol.u`, `sol.p`, …,
+    `sol.momentum`, … avec leurs types substitués.
+    """
+    etendus = list(contexte)
+    for vnom, vtype in contexte:
+        mv = re.match(r"^(\w+)\s*(.*)$", _normaliser_type(vtype))
+        if not mv or mv.group(1) not in structures:
+            continue
+        _params, champs = structures[mv.group(1)]
+        sub = dict(subst)
+        for fnom, _ in champs:
+            sub[fnom] = f"{vnom}.{fnom}"
+        for fnom, ftype in champs:
+            etendus.append((f"{vnom}.{fnom}", _substituer(ftype, sub)))
+    return etendus
+
+
+def _synthetiser_trou(type_cible: str, contexte: list, structures: dict,
+                      defs: dict, subst: dict) -> tuple:
+    """Tente de synthétiser un terme du type requis.
+
+    Retourne (terme, raison) ou (None, raison_échec).
+    Ordre : terme du contexte étendu (variable ou projection) →
+    projection de conjonction (avec réordonnancement si besoin).
+    """
+    cible = _substituer(type_cible, subst)
+    termes_pris = set(subst.values())
+    etendus = _termes_etendus(contexte, structures, subst)
+    # (a) terme du contexte étendu (pas déjà utilisé par un autre lieur :
+    # deux trous distincts ne reçoivent pas le même terme sauf nom identique)
+    for tnom, ttype in etendus:
+        if tnom in termes_pris:
+            continue
+        if _types_equivalents(ttype, cible, defs):
+            raison = ("lieur du contexte" if "." not in tnom
+                      else f"projection {tnom}")
+            return tnom, raison
+    # (c) projection d'une conjonction (def dont le corps est un ∧)
+    for tnom, ttype in etendus:
+        if tnom in termes_pris:
+            continue
+        mv = re.match(r"^(\w+)\s*(.*)$", _normaliser_type(ttype))
+        if not mv or mv.group(1) not in defs:
+            continue
+        nom_def = mv.group(1)
+        corps = _deplier(defs[nom_def], defs)
+        parts = _couper_conjonction(corps)
+        if len(parts) < 2:
+            continue
+        # Les paramètres de la def portent les mêmes noms que les lieurs
+        # substitués (u, p, T) : la substitution par noms suffit ici.
+        for idx, part in enumerate(parts, start=1):
+            tproj = _substituer(part, subst)
+            proj = f"{tnom}{_chemin_projection_conjonction(idx, len(parts))}"
+            if _types_equivalents(tproj, cible, defs):
+                return proj, f"conjonction {proj}"
+            # permutation des ∀ ?
+            ls, cs = _analyse_forall(tproj)
+            lt, ct = _analyse_forall(cible)
+            if ls and lt and _types_equivalents(cs, ct, defs):
+                lam = _reordonner_lambda(ls, lt, proj)
+                if lam:
+                    return lam, f"conjonction {proj} (lieurs réordonnés)"
+    return None, "non synthétisable (trou honnête)"
+
+
+def _squelette_synthese(d: DeclarationProuvee, ctx: dict, dossier: str) -> str:
+    """Squelette avec synthèse contrôlée : nom du sorry, sinon synthèse
+    typée, sinon `?_` honnête. Les lieurs déjà remplis alimentent la
+    substitution pour les trous suivants (u → sol.u avant hmom)."""
+    noms_sorry = ctx["noms_sorry"]
+    lieurs_sorry = [(n, t) for n, t in _lieurs_types(ctx["ent_sorry"])] \
+        if ctx.get("ent_sorry") else []
+    structures = _structures_corpus(dossier)
+    defs = _defs_corps(dossier)
+    subst: dict = {}
+    args = []
+    for nom, typ in _lieurs_types(d):
+        if nom in noms_sorry:
+            args.append(nom)
+            subst[nom] = nom
+            continue
+        terme, _raison = _synthetiser_trou(typ, lieurs_sorry, structures,
+                                          defs, subst)
+        if terme is None:
+            args.append("?_")
+        else:
+            args.append(terme)
+            subst[nom] = terme
+    return f"refine {_nom_lean(d)}" + (" " + " ".join(args) if args else "")
+
+
 def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = None,
                       max_candidats: int = 12) -> dict:
     """Candidats de câblage guidés pour un sorry, classés et expliqués."""
@@ -570,23 +968,29 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
     ctx = _contexte_cablage(sorry, dossier, chemin_registre)
     if ctx["statut"] == "INTROUVABLE":
         return {"statut": "INTROUVABLE", "sorry": sorry, "candidats": []}
-    noms_sorry = ctx["noms_sorry"]
+    # Tri sur le score AVANT toute synthèse : `_squelette_synthese` est
+    # coûteuse (analyse de types, dépliage de defs) et ne doit tourner que
+    # sur les retenus, pas sur tout le pool scoré (37015 admissibles pour
+    # energy_identity — la version précédente synthétisait tout).
+    scored_tries = sorted(ctx["scored"],
+                         key=lambda t: (-t[1], t[0].module, t[0].nom))
     bruts: list[Candidat] = []
-    for d, score, raisons in ctx["scored"]:
-        # squelette : lieurs du sorry par nom, le reste en trous nommés
-        squelette = _squelette_mono(d, noms_sorry)
+    for d, score, raisons in scored_tries[:max_candidats]:
+        # squelette : lieurs du sorry par nom, sinon synthèse contrôlée
+        # de structures, sinon trou `?_` honnête
+        squelette = _squelette_synthese(d, ctx, dossier)
         bruts.append(Candidat(
             sorry=sorry, module_source=d.module, fichier_source=d.fichier,
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
             conclusion_source=d.conclusion, squelette=squelette,
             score=score, raisons=raisons))
-    bruts.sort(key=lambda c: (-c.score, c.module_source, c.declaration))
-    choix = bruts[:max_candidats]
+    choix = bruts
     return {
         "statut": "TROUVÉ",
         "sorry": sorry,
         "module_sorry": ctx["module_sorry"],
         "enonce_sorry": ctx["enonce_sorry"],
+        "opens_sorry": ctx.get("opens_sorry", []),
         "candidats": [
             {"declaration": c.declaration, "module": c.module_source,
              "fichier": c.fichier_source, "ligne": c.ligne,
@@ -1263,7 +1667,8 @@ def rendre_chemins(res: dict, limite: int = 12) -> str:
 
 
 def fichier_verification(sorry: str, candidat: dict, module_sorry: str,
-                         lieurs_sorry: list, conclusion_sorry: str) -> str:
+                         lieurs_sorry: list, conclusion_sorry: str,
+                         opens_sorry: list | None = None) -> str:
     """Fichier Lean formellement identifiable comme preuve (ou non)."""
     imports = []
     for m in [module_sorry, candidat["module"]]:
@@ -1279,6 +1684,10 @@ def fichier_verification(sorry: str, candidat: dict, module_sorry: str,
         "",
     ]
     lignes += [f"import {m}" for m in imports]
+    # B3 : rejouer les `open` du fichier du sorry, sinon les identifiants
+    # comme `Integrable` (sous `open MeasureTheory`) sont inconnus.
+    for o in (opens_sorry or []):
+        lignes.append(o)
     lignes += [
         "",
         f"example {' '.join(lieurs_sorry)} :",
