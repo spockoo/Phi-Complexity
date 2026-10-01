@@ -32,6 +32,7 @@ from phi_complexity.chemins_verifiables import (
     _type_etape,
     chemins,
     declarations_dans_fichier,
+    fichier_verification,
     fichier_verification_chemin,
 )
 
@@ -122,6 +123,18 @@ class TestB3OpensRejoues:
         assert "open MeasureTheory" in contenu
         # les opens viennent après les imports
         assert contenu.index("import S") < contenu.index("open Real")
+
+    def test_fichier_verification_mono_rejoue_opens(self):
+        """B3 sur le chemin mono-lemme (2026-10-01, défaut nommé par Lean
+        sur energy_identity) : sans le replay des `open` du sorry,
+        `Integrable` (sous `open MeasureTheory`) est inconnu."""
+        cand = {"declaration": "cand", "module": "M", "fichier": "M.lean",
+                "ligne": 1, "score": 1.0, "squelette": "refine cand ?_"}
+        contenu = fichier_verification(
+            "but", cand, "S", ["(n : Nat)"], "P n",
+            opens_sorry=["open MeasureTheory"])
+        assert "open MeasureTheory" in contenu
+        assert contenu.index("import S") < contenu.index("open MeasureTheory")
 
 
 class TestB4UniversRetires:

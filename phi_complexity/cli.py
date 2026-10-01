@@ -929,7 +929,8 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
             res["enonce_sorry"], args.sorry)
         for i, c in enumerate(res["candidats"]):
             contenu = fichier_verification(
-                args.sorry, c, res["module_sorry"], groupes, conclusion)
+                args.sorry, c, res["module_sorry"], groupes, conclusion,
+                opens_sorry=res.get("opens_sorry"))
             chemin_v = os.path.join(
                 dossier, f"Verification_{args.sorry}_{i}.lean")
             try:
