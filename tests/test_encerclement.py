@@ -56,6 +56,25 @@ class TestSousTermes:
 
 
 class TestAnglesApplicables:
+    def test_cablage_direct_toujours_propose_en_premier(self):
+        angles = _angles_encerclement(
+            "pas d'équivalence, mismatch non décisif",
+            "ℝ", "n", "ℕ", {})
+        assert angles[0]["nom"] == "CÂBLAGE_DIRECT"
+        assert angles[0]["terme"] == "n"
+        # Type brut : l'élaborateur déplie lui-même (hygiène correcte).
+        assert angles[0]["type_trou"] == "ℝ"
+
+    def test_cablage_direct_ne_deplie_pas(self):
+        # Le dépliage textuel capture les lieurs (cf. HasSchwartzDecay
+        # capturant `u`) : le direct garde le type brut.
+        defs = {"A": "ℕ"}
+        angles = _angles_encerclement("borne de dépliage atteinte",
+                                      "A", "x", "ℕ", defs)
+        direct = angles[0]
+        assert direct["nom"] == "CÂBLAGE_DIRECT"
+        assert direct["type_trou"] == "A"
+
     def test_borne_de_depliage_propose_depliage_profond(self, defs_chaine):
         angles = _angles_encerclement(
             "borne de dépliage atteinte, définitions restantes",
@@ -153,15 +172,20 @@ class TestEncerclerDirection:
             lambda *a, **k: inscrits.append(a) or {"ok": True})
         return inscrits
 
-    def _lance(self, verdicts, monkeypatch, inscrits, **kw):
+    def _lance(self, verdicts, monkeypatch, inscrits, faux=None, **kw):
         import phi_complexity.chemins_verifiables as m
-        it = iter(verdicts)
-        monkeypatch.setattr(
-            m, "verdict_lean",
-            lambda chemin, dossier, timeout_s=600: next(it))
+        appels = {"n": 0}
+
+        def faux_cycle(chemin, dossier, timeout_s=600):
+            v = verdicts[min(appels["n"], len(verdicts) - 1)]
+            appels["n"] += 1
+            return v
+
+        monkeypatch.setattr(m, "verdict_lean",
+                            faux if faux is not None else faux_cycle)
         return encercler_direction(
             "s", "MS", _candidat_minimal(), {}, _direction(), {},
-            "empreinte", "/tmp", timeout_s=10, max_angles=3, **kw)
+            "empreinte", "/tmp", timeout_s=10, max_angles=4, **kw)
 
     def test_prouve_devient_atteignable_trouve(self, isole, monkeypatch):
         fiche = self._lance(
@@ -177,7 +201,7 @@ class TestEncerclerDirection:
             [{"verdict": "RÉFUTÉ",
               "diagnostic": "type mismatch: ℕ vs ℝ"}], monkeypatch, isole)
         assert fiche["statut"] == "ENCERCLE"
-        assert fiche["angles_decisifs"] == ["COERCION"]
+        assert "CÂBLAGE_DIRECT" in fiche["angles_decisifs"]
         assert len(isole) == 1  # Lean a tranché → registre
         assert fiche["registre"] == "IMPOSSIBLE_VALIDÉ"
 
@@ -188,16 +212,19 @@ class TestEncerclerDirection:
             isole)
         assert fiche["statut"] == "RESISTANT"
         assert isole == []
-        assert len(fiche["angles"]) == 1
+        assert len(fiche["angles"]) == 2  # direct + coercition, tous sondés
 
     def test_aucun_angle_applicable_rend_none(self, isole, monkeypatch):
+        # Garde défensive : si un jour aucun angle n'est applicable,
+        # pas de faux dossier.
         import phi_complexity.chemins_verifiables as m
+        monkeypatch.setattr(m, "_angles_encerclement", lambda *a: [])
         direction = {"trou": "h", "type_trou": "Nat", "terme": "x",
                      "type_terme": "String",
                      "raison": "pas d'équivalence, mismatch non décisif"}
         assert encercler_direction(
             "s", "MS", _candidat_minimal(), {}, direction, {},
-            "empreinte", "/tmp", max_angles=3) is None
+            "empreinte", "/tmp", max_angles=4) is None
 
     def test_on_ne_ferme_pas_au_premier_contact(
             self, isole, monkeypatch):
@@ -218,11 +245,40 @@ class TestEncerclerDirection:
         defs = {"A1": "ℕ"}
         fiche = encercler_direction(
             "s", "MS", _candidat_minimal(), {}, direction, defs,
-            "empreinte", "/tmp", max_angles=3)
+            "empreinte", "/tmp", max_angles=4)
         noms = [a["angle"] for a in fiche["angles"]]
-        assert noms == ["DEPLIAGE_PROFOND", "SOUS_TERMES"]
-        assert len(vus) == 2
+        assert noms == ["CÂBLAGE_DIRECT", "DEPLIAGE_PROFOND", "SOUS_TERMES"]
+        assert len(vus) == 3
+        # Le direct est non concluant (timeout), le dépliage profond est
+        # décisif et transfère à l'original (égalité définitionnelle).
         assert fiche["statut"] == "ENCERCLE"
+        assert fiche["angles_decisifs"] == ["DEPLIAGE_PROFOND"]
+
+    def test_variante_refutee_ne_ferme_pas_l_original(
+            self, isole, monkeypatch):
+        # Le mismatch d'une variante (coercition, sous-terme) ne prouve
+        # rien sur le câblage original : RESISTANT, pas d'inscription.
+        def faux_verdict(chemin, dossier, timeout_s=600):
+            if "CÂBLAGE_DIRECT" in chemin:
+                return {"verdict": "INDÉCIDÉ", "diagnostic": "timeout"}
+            return {"verdict": "RÉFUTÉ", "diagnostic": "type mismatch"}
+        fiche = self._lance([], monkeypatch, isole, faux=faux_verdict)
+        assert fiche["statut"] == "RESISTANT"
+        assert isole == []
+        assert fiche["registre"] is None
+
+    def test_variante_prouvee_escaladee_sans_inscription(
+            self, isole, monkeypatch):
+        # Direct non concluant mais coercition PROUVÉE : le mécanisme est
+        # atteignable via la variante → escaladé, jamais inscrit.
+        def faux_verdict(chemin, dossier, timeout_s=600):
+            if "COERCION" in chemin:
+                return {"verdict": "PROUVÉ", "diagnostic": "exit 0"}
+            return {"verdict": "INDÉCIDÉ", "diagnostic": "timeout"}
+        fiche = self._lance([], monkeypatch, isole, faux=faux_verdict)
+        assert fiche["statut"] == "ATTEIGNABLE_TROUVE"
+        assert "COERCION" in fiche["note"]
+        assert isole == []
 
 
 class TestFichierEncerclement:

@@ -929,7 +929,20 @@ def _chemin_projection_conjonction(idx: int, total: int) -> str:
 
 
 def _couper_conjonction(corps: str) -> list:
-    """Découpe un corps en conjonctions de top-niveau (« A ∧ B ∧ C »)."""
+    """Découpe un corps en conjonctions de top-niveau (« A ∧ B ∧ C »).
+
+    Durcissement (2026-10-01) : un corps qui commence par un binder
+    (∀, ∃, fun, λ) n'est PAS une conjonction de top-niveau, même s'il
+    contient un ∧ plus loin (ex. « ∀ K, ∃ C, 0 ≤ C ∧ ... » : le ∧ est
+    sous les binders). Sans cette garde, on générait des projections
+    invalides (« data.decay.1 » sur une fonction), que Lean rejette
+    avec « Invalid projection ». On retourne alors le corps intact
+    (une seule partie → pas de projection).
+    """
+    norme = _normaliser_type(corps)
+    # Binder en tête : pas de découpage (le ∧ éventuel est sous portée).
+    if re.match(r"^(∀|∃|fun\b|λ)", norme):
+        return [norme] if norme else []
     parts, prof, cur = [], 0, []
     i = 0
     while i < len(corps):
@@ -1439,14 +1452,33 @@ def _angles_encerclement(raison: str, type_trou: str, terme: str,
     """Angles d'encerclement applicables à une direction INCONNU.
 
     Chaque angle = {"nom", "type_trou", "terme", "justification"} : une
-    variante du câblage à soumettre à Lean. Jamais de verdict statique :
+    proposition de câblage à soumettre à Lean. Jamais de verdict statique :
     l'angle ne fait que proposer, Lean dispose.
-    - DEPLIAGE_PROFOND : déplie au-delà de la borne du classifieur.
+    - CÂBLAGE_DIRECT : le câblage original soumis tel quel à
+      l'élaborateur (toujours applicable). C'est la vérité de terrain :
+      si Lean l'accepte, l'INCONNU cachait un vrai câblage ; s'il le
+      RÉFUTE par mismatch, l'incertitude du classifieur est levée. Les
+      autres angles n'explorent que les cas où l'élaborateur reste non
+      concluant.
+    - DEPLIAGE_PROFOND : déplie au-delà de la borne du classifieur. Le
+      dépliage est une égalité définitionnelle : un verdict Lean sur la
+      forme dépliée vaut pour la forme originale (transfert noté).
     - COERCION : ascription explicite `((terme : Tterme) : Ttrou)` quand
       les têtes forment une paire de coercition connue.
     - SOUS_TERMES : tête et applications partielles du terme composé.
     """
     angles = []
+    # Type brut, pas déplié : l'élaborateur Lean déplie lui-même avec
+    # l'hygiène correcte (bêta-réduction, pas de capture). Le dépliage
+    # textuel dans un fichier émis produit des types mal scopés
+    # (constaté : `HasSchwartzDecay` déplié capture `u`), et Lean
+    # rapporte alors des erreurs du scaffolding, pas du câblage.
+    angles.append({
+        "nom": "CÂBLAGE_DIRECT",
+        "type_trou": _normaliser_type(type_trou),
+        "terme": terme,
+        "justification": "câblage original soumis tel quel à Lean",
+    })
     depl = _deplieur_pour(defs)
     if ("borne de dépliage" in raison
             or depl.presents(_deplier(type_trou, defs))
@@ -1544,7 +1576,9 @@ def encercler_direction(sorry: str, module_sorry: str, candidat: dict,
             fiche_angle["fichier"] = chemin_v
         else:
             fiche_angle["fichier"] = nom_fichier
-        if statut_angle == "NON_CONCLUANT":
+        if statut_angle in ("NON_CONCLUANT", "DECISIF"):
+            # Diagnostic complet conservé : l'erreur minimisée fait foi
+            # (doctrine : goal verbatim, erreur complète).
             fiche_angle["diagnostic"] = v["diagnostic"]
         fiches_angles.append(fiche_angle)
         if statut_angle == "DECISIF":
@@ -1555,15 +1589,41 @@ def encercler_direction(sorry: str, module_sorry: str, candidat: dict,
         "angles": fiches_angles,
         "registre": None,
     }
-    if any(f["statut_angle"] == "ATTEIGNABLE" for f in fiches_angles):
+    trouves = [f for f in fiches_angles
+               if f["statut_angle"] == "ATTEIGNABLE"]
+    direct = next((f for f in fiches_angles
+                   if f["angle"] == "CÂBLAGE_DIRECT"), None)
+    profond = next((f for f in fiches_angles
+                    if f["angle"] == "DEPLIAGE_PROFOND"), None)
+    if trouves:
+        # PROUVÉ par Lean = vérité de terrain, que ce soit le câblage
+        # direct ou une variante (coercition, dépliage…). Escaladé,
+        # jamais inscrit au registre des impossibilités.
+        premier = trouves[0]
         dossier["statut"] = "ATTEIGNABLE_TROUVE"
-    elif decisifs:
-        # Lean a RÉFUTÉ le câblage sous forme dépliée (définionnellement
-        # égale à l'originale) : c'est Lean qui promeut, pas une analyse
-        # statique — même discipline que --valider-solidite.
+        if premier["angle"] == "CÂBLAGE_DIRECT":
+            dossier["note"] = ("câblage original PROUVÉ par Lean — "
+                               "l'INCONNU cachait un vrai câblage")
+        else:
+            dossier["note"] = (
+                f"variante {premier['angle']} PROUVÉE par Lean "
+                f"({premier['justification']}) — câblage à adapter")
+    elif ((direct is not None and direct["statut_angle"] == "DECISIF")
+          or (profond is not None
+              and profond["statut_angle"] == "DECISIF")):
+        # Lean a RÉFUTÉ le câblage original (directement, ou sous forme
+        # dépliée — définitionnellement égale à l'originale, transfert
+        # noté) : c'est Lean qui promeut, pas une analyse statique —
+        # même discipline que --valider-solidite. Les autres angles
+        # (coercition, sous-termes) ne documentent que la frontière :
+        # leur mismatch ne transfère jamais à l'original.
         dossier["statut"] = "ENCERCLE"
         dossier["angles_decisifs"] = decisifs
-        raison = (f"encerclé (angles décisifs : {', '.join(decisifs)}) : "
+        par = ("CÂBLAGE_DIRECT"
+               if direct is not None and direct["statut_angle"] == "DECISIF"
+               else "DEPLIAGE_PROFOND (transfert par égalité "
+                    "définitionnelle)")
+        raison = (f"encerclé (angle décisif : {par}) : "
                   f"{direction['raison']}")
         try:
             inscrire_impossible_valide(
@@ -1574,6 +1634,10 @@ def encercler_direction(sorry: str, module_sorry: str, candidat: dict,
         except ErreurRegistre as e:
             dossier["registre"] = f"ÉCHEC_INSCRIPTION : {e}"
             dossier["erreur_registre"] = str(e)
+    else:
+        dossier["note"] = ("encerclement complet, aucun verdict décisif "
+                           "sur le câblage original — mécanisme sensible, "
+                           "escaladé")
     return inscrire_dossier_encerclement(
         sorry, candidat["declaration"], direction["trou"],
         direction["type_trou"], direction["terme"], empreinte, dossier)
@@ -1782,7 +1846,11 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
         comptes = {"ATTEIGNABLE": 0, "CANDIDAT_IMPOSSIBLE": 0,
                    "INCONNU": 0, "IMPOSSIBLE_VALIDÉ": 0}
         for terme, type_terme, zone, raison in directions:
-            if (zone == "CANDIDAT_IMPOSSIBLE" and sorry
+            # Le registre est consulté pour les deux zones falsifiables :
+            # CANDIDAT_IMPOSSIBLE (via --valider-solidite) et INCONNU
+            # (via --encercler → ENCERCLE). Dans les deux cas, seul Lean
+            # a promu : l'élagage est réel.
+            if (zone in ("CANDIDAT_IMPOSSIBLE", "INCONNU") and sorry
                     and est_impossible_valide(sorry, d.nom, nom, cible,
                                               terme, empreinte, registre)):
                 zone = "IMPOSSIBLE_VALIDÉ"

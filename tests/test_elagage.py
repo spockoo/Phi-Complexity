@@ -226,6 +226,34 @@ class TestElagageReel:
                       for t in cand2["directions"]["trous"].values())
         assert valides == 1
 
+    def test_inconnu_encercle_est_elague(self, dossier_elagage,
+                                         registre_isole):
+        # Un INCONNU promu ENCERCLE par Lean (via --encercler) doit être
+        # élagué à la mesure suivante, comme un CANDIDAT_IMPOSSIBLE.
+        res = candidats_cablage("but", dossier_elagage, max_candidats=1)
+        assert res["statut"] == "TROUVÉ"
+        cand = res["candidats"][0]
+        avant = cand["directions"]["directions_ouvertes"]
+        inconnus = cand["inconnus"]
+        assert inconnus, "le fixture doit produire des INCONNU"
+        cible = inconnus[0]
+
+        emp = empreinte_enonce(res["enonce_sorry"])
+        inscrire_impossible_valide("but", cand["declaration"],
+                                   cible["trou"], cible["type_trou"],
+                                   cible["terme"], "encerclé (angle décisif "
+                                   ": CÂBLAGE_DIRECT)", "f.lean", emp)
+
+        res2 = candidats_cablage("but", dossier_elagage, max_candidats=1)
+        cand2 = res2["candidats"][0]
+        apres = cand2["directions"]["directions_ouvertes"]
+        assert apres == avant - 1
+        termes = {(p["trou"], p["terme"]) for p in cand2["inconnus"]}
+        assert (cible["trou"], cible["terme"]) not in termes
+        valides = sum(t.get("IMPOSSIBLE_VALIDÉ", 0)
+                      for t in cand2["directions"]["trous"].values())
+        assert valides == 1
+
     def test_sans_sorry_pas_de_registre(self, dossier_elagage, registre_isole):
         # mesurer_directions sans sorry : pas de consultation du registre.
         inscrire_impossible_valide("but", "cand", "h", "Nat", "s", "r",
@@ -390,3 +418,29 @@ class TestContexteVariables:
             entete, "c", inclure_implicites=True)
         assert complets == ["{E : Type*}", "[NormedAddCommGroup E]",
                             "(x : E)"]
+
+
+class TestCouperConjonctionDurcie:
+    """Durcissement (2026-10-01) : un corps sous binder n'est pas une
+    conjonction de top-niveau (bug « data.decay.1 » sur une fonction)."""
+
+    def test_corps_sous_forall_pas_decoupe(self):
+        from phi_complexity.chemins_verifiables import _couper_conjonction
+        corps = ("∀ (K : ℕ), ∃ C, 0 ≤ C ∧ ∀ (x : Fin 3 → ℝ), "
+                 "‖x‖ ≤ C / (1 + ‖x‖) ^ K")
+        assert _couper_conjonction(corps) == [_normaliser(corps)]
+
+    def test_vraie_conjonction_decouppee(self):
+        from phi_complexity.chemins_verifiables import _couper_conjonction
+        parts = _couper_conjonction("A ∧ B ∧ C")
+        assert parts == ["A", "B", "C"]
+
+    def test_conjonction_parenthesee_decouppee(self):
+        from phi_complexity.chemins_verifiables import _couper_conjonction
+        parts = _couper_conjonction("(∀ K, A K) ∧ B")
+        assert len(parts) == 2
+
+
+def _normaliser(s):
+    from phi_complexity.chemins_verifiables import _normaliser_type
+    return _normaliser_type(s)
