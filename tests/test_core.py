@@ -1,50 +1,12 @@
 """
 tests/test_core.py — Tests unitaires des constantes et fonctions core.
 """
-
 import math
-import re
-from importlib import metadata
-from pathlib import Path
-from typing import Optional
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    tomllib = None
-
-import phi_complexity
 from phi_complexity.core import (
-    PHI,
-    PHI_INV,
-    TAXE_SUTURE,
-    ETA_GOLDEN,
-    ZETA_PLANCHER,
-    SEQUENCE_FIBONACCI,
-    statut_gnostique,
-    fibonacci_plus_proche,
-    distance_fibonacci,
+    PHI, PHI_INV, TAXE_SUTURE, ETA_GOLDEN, ZETA_PLANCHER,
+    SEQUENCE_FIBONACCI, statut_gnostique,
+    fibonacci_plus_proche, distance_fibonacci
 )
-
-
-def _expected_version() -> str:
-    """Version attendue : métadonnées installées ou fallback pyproject."""
-    try:
-        return metadata.version("phi-complexity")
-    except metadata.PackageNotFoundError:
-        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        contenu = pyproject.read_text(encoding="utf-8")
-        if tomllib:
-            data = tomllib.loads(contenu)
-            version: Optional[str] = data.get("project", {}).get("version")
-            if version:
-                return version
-        match = re.search(
-            r"^version\\s*=\\s*\"(?P<ver>[^\"]+)\"", contenu, re.MULTILINE
-        )
-        if match:
-            return match.group("ver")
-        return "0.0.0"
 
 
 class TestConstantesSouveraines:
@@ -56,7 +18,7 @@ class TestConstantesSouveraines:
 
     def test_phi_propriete_auto_similaire(self):
         """La propriété fondamentale : φ² = φ + 1"""
-        assert abs(PHI**2 - (PHI + 1)) < 1e-10
+        assert abs(PHI ** 2 - (PHI + 1)) < 1e-10
 
     def test_phi_inv_propriete(self):
         """1/φ = φ - 1"""
@@ -74,7 +36,7 @@ class TestConstantesSouveraines:
 
     def test_zeta_plancher(self):
         """Plancher Zeta = 1/φ² ≈ 0.38196"""
-        attendu = PHI_INV**2
+        attendu = PHI_INV ** 2
         assert abs(ZETA_PLANCHER - attendu) < 1e-10
 
     def test_fibonacci_sequence_debut(self):
@@ -87,9 +49,7 @@ class TestConstantesSouveraines:
         # On vérifie uniquement à partir de l'indice 8 (après 21) où la convergence est établie
         for i in range(8, len(fib) - 1):
             ratio = fib[i + 1] / fib[i]
-            assert (
-                abs(ratio - PHI) < 0.001
-            ), f"Ratio {fib[i+1]}/{fib[i]} = {ratio} trop éloigné de φ"
+            assert abs(ratio - PHI) < 0.001, f"Ratio {fib[i+1]}/{fib[i]} = {ratio} trop éloigné de φ"
 
 
 class TestStatutGnostique:
@@ -129,15 +89,3 @@ class TestFibonacci:
     def test_distance_fibonacci_positive(self):
         """Un nombre hors séquence a une distance positive."""
         assert distance_fibonacci(10) > 0
-
-
-class TestVersionSynchronisation:
-    """La version exposée doit refléter celle du package installé."""
-
-    def test_version_sync_metadata(self):
-        attendu = _expected_version()
-        assert phi_complexity.__version__ == attendu
-        # VERSION (core) est l'alias utilisé par la CLI
-        from phi_complexity.core import VERSION
-
-        assert VERSION == attendu

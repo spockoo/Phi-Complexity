@@ -1,351 +1,246 @@
-from __future__ import annotations
+"""
+cli.py — Interface en ligne de commande souveraine.
+Suturée selon les recommandations de phi-complexity v0.1.0 (Protocole BMAD).
+main() décomposée en 5 fonctions hermétiques — Règle I : Herméticité de la Portée.
+Multi-langage depuis 0.2.0 : détection automatique par extension + option --lang.
+"""
 import sys
 import os
-import json
 import argparse
-import traceback
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from . import auditer, rapport_console, rapport_markdown, rapport_json
+from . import auditer, rapport_console, rapport_markdown, rapport_json, rapport_sarif
 from .core import VERSION
+from .langs import est_fichier_supporte
 
-if TYPE_CHECKING:
-    from .fingerprint import PhiFingerprint
-
-# Extensions de fichiers supportées par le framework φ-Meta
-_EXTENSIONS_SUPPORTEES: Tuple[str, ...] = (
-    ".py",
-    ".c",
-    ".cpp",
-    ".h",
-    ".hpp",
-    ".rs",
-    ".asm",
-    ".s",
-)
-
-# Extensions binaires supportées par le backend ELF/PE/Mach-O
-_EXTENSIONS_BINAIRES: Tuple[str, ...] = (
-    ".elf",
-    ".so",
-    ".o",
-    ".exe",
-    ".dll",
-    ".sys",
-    ".dylib",
-    ".bin",
-)
 
 # ────────────────────────────────────────────────────────
 # CONSTRUCTION DU PARSEUR (hermétique, sans effets de bord)
 # ────────────────────────────────────────────────────────
 
-
-def _construire_parseur() -> argparse.ArgumentParser:  # phi: ignore[FIBONACCI]
+def _construire_parseur() -> argparse.ArgumentParser:
     """Construit et retourne le parseur d'arguments. Aucun état global."""
     parser = argparse.ArgumentParser(
         prog="phi",
-        description="phi-complexity — Audit de code par les invariants du nombre d'or (φ)",
+        description="phi-complexity — Audit de code multi-langage par les invariants du nombre d'or (φ)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples :
   phi check mon_script.py
   phi check ./src/ --min-radiance 75
+  phi check app.js
+  phi check script_sans_extension --lang ruby
   phi report mon_script.py --output rapport.md
   phi check mon_script.py --format json
-        """,
+  phi check mon_script.py --formule "100 - lilith_variance/phi"
+  phi check ./src/ --gate "radiance >= 75 and nb_anomalies == 0"
+  phi check mon_script.py --format sarif
+  phi edit mon_script.py --projet ./src/
+  phi index ./src/ --format json | jq .collisions
+  phi index ./src/ --rapide   # phase 1 seule : symboles sans métriques
+  phi chemins ./src/ --format json   # carte croyante : quel trou attaquer en premier
+  phi snapshot ./src/ --out ref.json  # figer l'état structurel (référence)
+  phi veille ./src/ --ref ref.json    # détecter les dégradations silencieuses
+        """
     )
-    parser.add_argument(
-        "--version", action="version", version=f"phi-complexity {VERSION}"
-    )
+    parser.add_argument("--version", action="version", version=f"phi-complexity {VERSION}")
 
     subparsers = parser.add_subparsers(dest="commande")
 
     check = subparsers.add_parser("check", help="Auditer un fichier ou un dossier")
-    check.add_argument("cible", help="Fichier .py ou dossier à auditer")
-    check.add_argument(
-        "--min-radiance",
-        type=float,
-        default=0,
-        help="Score minimum (exit code 1 si en-dessous)",
-    )
-    check.add_argument(
-        "--format",
-        choices=["console", "json"],
-        default="console",
-        help="Format de sortie",
-    )
-    check.add_argument(
-        "--bmad", action="store_true", help="Afficher la résonance des 12 agents BMAD"
-    )
+    check.add_argument("cible", help="Fichier ou dossier à auditer (tout langage supporté)")
+    check.add_argument("--min-radiance", type=float, default=0,
+                       help="Score minimum (exit code 1 si en-dessous)")
+    check.add_argument("--format", choices=["console", "json", "sarif"], default="console",
+                       help="Format de sortie (console, json, sarif)")
+    check.add_argument("--lang", default=None,
+                       help="Force le langage (ex: javascript, java, go...) au lieu de la détection par extension")
+    check.add_argument("--formule", default=None,
+                       help="Formule arithmétique personnalisée évaluée sur les métriques")
+    check.add_argument("--gate", default=None,
+                       help="Porte logique de qualité : exit 1 si l'expression est fausse")
 
     report = subparsers.add_parser("report", help="Générer un rapport Markdown")
-    report.add_argument("cible", help="Fichier .py à analyser")
-    report.add_argument(
-        "--output", "-o", default=None, help="Fichier de sortie (ex: rapport.md)"
-    )
+    report.add_argument("cible", help="Fichier à analyser")
+    report.add_argument("--output", "-o", default=None,
+                        help="Fichier de sortie (ex: rapport.md)")
+    report.add_argument("--lang", default=None,
+                        help="Force le langage (ex: javascript, java, go...) au lieu de la détection par extension")
 
-    subparsers.add_parser("fund", help="Soutenir la recherche sur le framework φ-Meta")
+    bayes = subparsers.add_parser("infer", help="Inférence bayésienne et prédiction d'auto-suture")
+    bayes.add_argument("cible", help="Fichier à analyser avec le moteur bayésien")
+    bayes.add_argument("--lang", default=None, help="Force le langage")
+    bayes.add_argument("--format", choices=["console", "json"], default="console", help="Format de sortie")
+    bayes.add_argument("--exact", action="store_true",
+                       help="Arithmétique double-double certifiée (EFT, opt-in)")
 
-    suture_parser = subparsers.add_parser(
-        "suture", help="Invoque Phidélia pour une suture intelligente."
-    )
-    suture_parser.add_argument("path", help="Fichier à suturer")
-    suture_parser.add_argument("--url", help="URL de l'API LLM locale")
+    edit = subparsers.add_parser("edit", help="Éditer un fichier dans l'éditeur phi (TUI)")
+    edit.add_argument("cible", help="Fichier à éditer (tout fichier texte ; créé s'il n'existe pas)")
+    edit.add_argument("--projet", default=None,
+                      help="Dossier projet pour l'index des symboles (défaut : dossier parent du fichier)")
+    edit.add_argument("--lang", default=None,
+                      help="Force le langage pour l'audit phi (ex: python)")
 
-    subparsers.add_parser("memory", help="Consulter les annales akashiques (Phase 11)")
+    index = subparsers.add_parser("index", help="Carte du projet : symboles, collisions, santé phi")
+    index.add_argument("dossier", help="Dossier projet à cartographier")
+    index.add_argument("--format", choices=["console", "json"], default="console",
+                       help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    index.add_argument("--lang", default=None,
+                       help="Force le langage d'analyse et d'audit (ex: python)")
+    index.add_argument("--exclude", default=None,
+                       help="Dossiers supplémentaires à exclure, séparés par des virgules "
+                            "(s'ajoutent aux exclusions par défaut : .lake/, .git/, "
+                            "__pycache__/, node_modules/, ...)")
+    index.add_argument("--no-exclude", action="store_true",
+                       help="Désactive les exclusions par défaut : indexe tout, "
+                            "y compris .lake/, .git/, __pycache__/")
+    index.add_argument("--rapide", action="store_true",
+                       help="Phase 1 seule : index des symboles (noms, lignes) "
+                            "sans calculer les métriques — quasi-instantané. "
+                            "La radiance et l'oudjat sont alors non calculés "
+                            "(null dans le JSON, signalés dans la console).")
 
-    seal_parser = subparsers.add_parser(
-        "seal", help="Apposer un sceau gnostique permanent (Phase 12)."
-    )
-    seal_parser.add_argument("cible", help="Fichier à sceller")
+    chemins = subparsers.add_parser("chemins", help="Carte croyante : symboles classés par postérieur "
+                                                    "(quel trou attaquer en premier)")
+    chemins.add_argument("dossier", help="Dossier projet à prioriser")
+    chemins.add_argument("--format", choices=["console", "json"], default="console",
+                         help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    chemins.add_argument("--top", type=int, default=10,
+                         help="Taille de la liste « attaquer en premier » (défaut : 10)")
+    chemins.add_argument("--lang", default=None,
+                         help="Force le langage d'analyse et d'audit (ex: python)")
+    chemins.add_argument("--exclude", default=None,
+                         help="Dossiers supplémentaires à exclure, séparés par des virgules")
+    chemins.add_argument("--no-exclude", action="store_true",
+                         help="Désactive les exclusions par défaut")
+    chemins.add_argument("--exact", action="store_true",
+                         help="Arithmétique double-double certifiée (EFT, opt-in)")
 
-    heal_parser = subparsers.add_parser(
-        "heal", help="Lancer une guérison autonome (Auto-Suture Phase 12)."
-    )
-    heal_parser.add_argument("cible", help="Fichier à guérir")
-    heal_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Forcer la guérison même si la radiance est élevée",
-    )
-    heal_parser.add_argument("--url", help="URL de l'API LLM locale")
+    snapshot = subparsers.add_parser("snapshot",
+                                     help="Figer l'état structurel d'un dossier "
+                                          "(carte croyante + arêtes) dans une "
+                                          "enveloppe datée et signée")
+    snapshot.add_argument("dossier", help="Dossier projet à figer")
+    snapshot.add_argument("--out", "-o", default=None,
+                          help="Fichier de sortie JSON (défaut : "
+                               "phi_snapshot_AAAAMMJJ_HHMMSS.json dans le "
+                               "dossier courant)")
+    snapshot.add_argument("--lang", default=None,
+                          help="Force le langage d'analyse (ex: python)")
+    snapshot.add_argument("--exclude", default=None,
+                          help="Dossiers supplémentaires à exclure, séparés par des virgules")
+    snapshot.add_argument("--no-exclude", action="store_true",
+                          help="Désactive les exclusions par défaut")
+    snapshot.add_argument("--force", action="store_true",
+                          help="Fige quand même la baseline même si l'instrument "
+                               "est dégradé (arrière-plan perdu) — à n'utiliser "
+                               "qu'en connaissance de cause ; par défaut la "
+                               "baseline est REFUSÉE (durcissement 2026-10-01)")
 
-    oracle_parser = subparsers.add_parser(
-        "oracle", help="Valider une release selon l'Oracle de Radiance (Phase 14)."
-    )
-    oracle_parser.add_argument("cible", help="Fichier ou dossier à auditer")
-    oracle_parser.add_argument(
-        "--min-radiance",
-        type=float,
-        default=70.0,
-        help="Seuil de radiance requis pour autoriser la release (défaut: 70)",
-    )
-    oracle_parser.add_argument(
-        "--nb-tests",
-        type=int,
-        default=0,
-        help="Nombre de tests passés (intégré dans la version Phi)",
-    )
+    veille = subparsers.add_parser("veille",
+                                    help="Comparer l'état courant d'un dossier "
+                                         "à une référence `phi snapshot` : "
+                                         "détecte les dégradations silencieuses")
+    veille.add_argument("dossier", help="Dossier projet à surveiller")
+    veille.add_argument("--ref", required=True,
+                        help="Enveloppe de référence (fichier `phi snapshot`)")
+    veille.add_argument("--format", choices=["console", "json"], default="console",
+                        help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    veille.add_argument("--lang", default=None,
+                        help="Force le langage d'analyse (ex: python)")
+    veille.add_argument("--exclude", default=None,
+                        help="Dossiers supplémentaires à exclure, séparés par des virgules")
+    veille.add_argument("--no-exclude", action="store_true",
+                        help="Désactive les exclusions par défaut")
 
-    harvest_parser = subparsers.add_parser(
-        "harvest", help="Collecter des vecteurs AST anonymisés pour l'IA (Phase 14)."
-    )
-    harvest_parser.add_argument("cible", help="Fichier ou dossier à collecter")
-    harvest_parser.add_argument(
-        "--output",
-        "-o",
-        default=".phi/harvest.jsonl",
-        help="Fichier JSONL de sortie (défaut: .phi/harvest.jsonl)",
-    )
+    oracle = subparsers.add_parser("oracle",
+                                   help="Traces d'oracle : la chaîne de raisonnement "
+                                        "exhibée (prior → évidences → postérieur → action)")
+    oracle.add_argument("cible", help="Fichier (moteur bayésien) ou dossier "
+                                      "(chemins croyants) à interroger")
+    oracle.add_argument("--symbole", default=None,
+                        help="Ne montre que les traces de ce symbole/hypothèse "
+                             "(comparaison exacte)")
+    oracle.add_argument("--format", choices=["console", "json"], default="console",
+                        help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    oracle.add_argument("--exact", action="store_true",
+                        help="Arithmétique double-double certifiée (EFT, opt-in) : "
+                             "ajoute la borne d'erreur certifiée à chaque trace")
+    oracle.add_argument("--top", type=int, default=10,
+                        help="Taille de la liste « attaquer en premier » (dossiers)")
+    sonde = subparsers.add_parser("sonde",
+                                  help="Sondes A/B : tracer l'inconditionnel à "
+                                       "partir du conditionnel (pôle fermeture / "
+                                       "pôle obstruction)")
+    sonde.add_argument("mecanisme",
+                       help="Mécanisme à sonder : sorry du Master "
+                            "(ex. energy_identity), hypothèse nommée "
+                            "(ex. H29, KatoBilinearData) ou chantier (ex. 138)")
+    sonde.add_argument("--registre", default=None,
+                       help="Chemin du registre vivant des hypothèses "
+                            "(défaut : REGISTRE_HYPOTHESES_20260929.md du dépôt lean)")
+    sonde.add_argument("--format", choices=["console", "json"], default="console",
+                       help="Format de sortie (console lisible, ou json pour les agents/jq)")
+    sonde.add_argument("--exact", action="store_true",
+                       help="Vérification renforcée (opt-in, cohérent avec PHI_EFT) : "
+                            "double passe de parsing indépendante + concordance "
+                            "des comptes + MD5 du registre en sortie")
+    sonde.add_argument("--dossier", default=None,
+                       help="Dossier pour les postérieurs des croyances "
+                            "(mode --format json uniquement : attache la "
+                            "section `entropie` par nœud ; défaut : "
+                            "~/workspace/lean-navier-stokes)")
 
-    pipeline_parser = subparsers.add_parser(
-        "pipeline", help="Lancer le pipeline Phidélia profond (Phase 33)."
-    )
-    pipeline_parser.add_argument("concept", help="L'objectif architectural à atteindre")
-    pipeline_parser.add_argument(
-        "--dir", default=".", help="Dossier du projet (défaut: .)"
-    )
+    ou_aller = subparsers.add_parser("ou-aller",
+                                     help="Où aller : liste d'attention ordonnée "
+                                          "par coût de booléanisation décroissant "
+                                          "(pas un score, pas une P(A) — "
+                                          "le veto de Tomy tranche)")
+    ou_aller.add_argument("--registre", default=None,
+                          help="Chemin du registre vivant des hypothèses "
+                               "(défaut : REGISTRE_HYPOTHESES_20260929.md du dépôt lean)")
+    ou_aller.add_argument("--dossier", default=None,
+                          help="Dossier pour les postérieurs des croyances "
+                               "(défaut : ~/workspace/lean-navier-stokes)")
+    ou_aller.add_argument("--format", choices=["console", "json"], default="console",
+                          help="Format de sortie (console lisible, ou json pour les agents/jq)")
 
-    # Phase 15 — Metadata (gouvernance harvest/vault)
-    metadata_parser = subparsers.add_parser(
-        "metadata", help="Synthèse et purge souveraine des métadonnées."
-    )
-    # Définit une action par défaut pour éviter l'ambiguïté (Suture bot review)
-    metadata_parser.set_defaults(metadata_action=None)
-    metadata_parser.set_defaults(_metadata_parser=metadata_parser)
-    metadata_sub = metadata_parser.add_subparsers(dest="metadata_action")
+    entropie = subparsers.add_parser("entropie",
+                                     help="Lentille entropique sur la Sonde B : "
+                                          "le grand livre chiffré du rétrécissement "
+                                          "(H et ΔH en bits, bornes EFT)")
+    entropie.add_argument("mecanisme",
+                          help="Mécanisme à chiffrer : sorry du Master "
+                               "(ex. energy_identity), hypothèse nommée "
+                               "ou chantier (ex. 138)")
+    entropie.add_argument("--registre", default=None,
+                          help="Chemin du registre vivant des hypothèses "
+                               "(défaut : REGISTRE_HYPOTHESES_20260929.md du dépôt lean)")
+    entropie.add_argument("--dossier", default=None,
+                          help="Dossier pour les postérieurs des croyances "
+                               "(défaut : ~/workspace/lean-navier-stokes)")
+    entropie.add_argument("--format", choices=["console", "json"], default="console",
+                          help="Format de sortie (console lisible, ou json pour les agents/jq)")
 
-    metadata_summary = metadata_sub.add_parser(
-        "summary", help="Afficher une synthèse des métadonnées (harvest + vault)."
-    )
-    metadata_summary.add_argument(
-        "--harvest",
-        default=".phi/harvest.jsonl",
-        help="Chemin du corpus harvest (défaut: .phi/harvest.jsonl)",
-    )
-    metadata_summary.add_argument(
-        "--vault-index",
-        default=".phi/vault/index.json",
-        help="Index du vault (défaut: .phi/vault/index.json)",
-    )
-    metadata_summary.add_argument(
-        "--format",
-        choices=["text", "json"],
-        default="text",
-        help="Format de sortie (texte par défaut).",
-    )
-
-    metadata_purge = metadata_sub.add_parser(
-        "purge", help="Sanitiser un corpus harvest pour partage (strip / features)."
-    )
-    metadata_purge.add_argument(
-        "--harvest",
-        default=".phi/harvest.jsonl",
-        help="Chemin du corpus harvest (défaut: .phi/harvest.jsonl)",
-    )
-    metadata_purge.add_argument(
-        "--output",
-        "-o",
-        default=None,
-        help="Fichier de sortie. Par défaut : <harvest>.sanitized.jsonl",
-    )
-    metadata_purge.add_argument(
-        "--in-place",
-        action="store_true",
-        help="Écrase le fichier harvest (attention : irréversible).",
-    )
-    metadata_purge.add_argument(
-        "--strip",
-        action="append",
-        default=[],
-        help="Clés supplémentaires à supprimer (option répétable).",
-    )
-    metadata_purge.add_argument(
-        "--strip-sensitive",
-        action="store_true",
-        help="Supprime les clés sensibles (timestamp, fingerprint).",
-    )
-    metadata_purge.add_argument(
-        "--strip-labels",
-        action="store_true",
-        help="Supprime les labels/nb_critiques (partage sans annotations).",
-    )
-    metadata_purge.add_argument(
-        "--keep-features",
-        action="store_true",
-        help="Conserve uniquement les métriques structurelles (vecteur φ).",
-    )
-
-    spiral_parser = subparsers.add_parser(
-        "spiral", help="Afficher la Spirale Dorée de radiance (Phase 14)."
-    )
-    spiral_parser.add_argument("cible", help="Fichier à visualiser")
-
-    # Phase 16 — Vault (mémoire persistante type Obsidian)
-    vault_parser = subparsers.add_parser(
-        "vault", help="Auditer et enregistrer dans le Phi Vault (Phase 16)."
-    )
-    vault_parser.add_argument("cible", help="Fichier ou dossier à auditer et archiver")
-
-    # Phase 16 — Graph (visualisation du graphe de radiance)
-    graph_parser = subparsers.add_parser(
-        "graph",
-        help="Afficher le graphe de radiance du vault (Phase 16).",
-    )
-    graph_parser.add_argument(
-        "--format",
-        choices=["ascii", "dot"],
-        default="ascii",
-        help="Format de sortie (ascii ou dot)",
-    )
-
-    # Phase 17 — Canvas (export .canvas compatible Obsidian)
-    canvas_parser = subparsers.add_parser(
-        "canvas",
-        help="Exporter un Canvas Obsidian (.canvas) du code audité (Phase 17).",
-    )
-    canvas_parser.add_argument("cible", help="Fichier ou dossier à auditer")
-    canvas_parser.add_argument(
-        "--output",
-        "-o",
-        default=".phi/architecture.canvas",
-        help="Fichier .canvas de sortie (défaut: .phi/architecture.canvas)",
-    )
-
-    # Phase 18 — Search (recherche sémantique dans le vault)
-    search_parser = subparsers.add_parser(
-        "search", help="Recherche sémantique dans le Phi Vault (Phase 18)."
-    )
-    search_parser.add_argument(
-        "--statut",
-        help="Chercher par statut (HERMÉTIQUE, EN ÉVEIL, DORMANT)",
-    )
-    search_parser.add_argument(
-        "--min-radiance",
-        type=float,
-        default=0.0,
-        help="Radiance minimale",
-    )
-    search_parser.add_argument(
-        "--max-radiance",
-        type=float,
-        default=100.0,
-        help="Radiance maximale",
-    )
-    search_parser.add_argument(
-        "--categorie",
-        help="Chercher par catégorie d'annotation (LILITH, SUTURE, FIBONACCI, SOUVERAINETE)",
-    )
-    search_parser.add_argument(
-        "--etat-zero",
-        help="Chercher par état morphogénétique (PRE_ZERO, ZERO_CAUSAL, POST_RENAISSANCE)",
-    )
-
-    # Phase 20 — SBOM (Software Bill of Materials)
-    sbom_parser = subparsers.add_parser(
-        "sbom", help="Générer le Software Bill of Materials (Phase 20)."
-    )
-    sbom_parser.add_argument(
-        "--output",
-        "-o",
-        default=".phi/sbom.json",
-        help="Fichier SBOM de sortie (défaut: .phi/sbom.json)",
-    )
-
-    shield_parser = subparsers.add_parser(
-        "shield", help="Audit sécurité unifié + gate CI (Phase 22)."
-    )
-    shield_parser.add_argument("cible", help="Fichier ou dossier à auditer")
-    shield_parser.add_argument(
-        "--sarif",
-        default=None,
-        help="Fichier SARIF externe à fusionner (ex: flawfinder_results.sarif)",
-    )
-    shield_parser.add_argument(
-        "--output",
-        "-o",
-        default=".phi/security_audit.json",
-        help="Fichier JSON de sortie (défaut: .phi/security_audit.json)",
-    )
-    shield_parser.add_argument(
-        "--min-security-score",
-        type=float,
-        default=70.0,
-        help="Seuil minimal de sécurité pour passer le gate (défaut: 70)",
-    )
-    shield_parser.add_argument(
-        "--include-demo",
-        action="store_true",
-        help="Inclure les exemples pédagogiques dans le score/gate",
-    )
-
-    # Phase 24 — Scan antiviral (phi-fingerprint + sentinel)
-    scan_parser = subparsers.add_parser(
-        "scan",
-        help="Scanner un binaire ou fichier source (analyse antivirale φ-Sentinel Phase 24).",
-    )
-    scan_parser.add_argument("cible", help="Fichier binaire ou dossier à scanner")
-    scan_parser.add_argument(
-        "--format",
-        choices=["console", "json"],
-        default="console",
-        help="Format de sortie (console ou json)",
-    )
-    scan_parser.add_argument(
-        "--harvest",
-        action="store_true",
-        help="Collecter le fingerprint dans le corpus harvest",
-    )
-    scan_parser.add_argument(
-        "--output",
-        "-o",
-        default=".phi/harvest.jsonl",
-        help="Fichier JSONL pour le harvest (défaut: .phi/harvest.jsonl)",
-    )
-
-    subparsers.add_parser("ui", help="Démarrer le Moteur Web IDE Phidélia local.")
-
+    explorer = subparsers.add_parser("explorer",
+                                     help="Explorateur interactif : typographie des symboles "
+                                          "et analyse (sondes, oracle, entropie) en une seule "
+                                          "surface — HTML autonome, zéro réseau")
+    explorer.add_argument("mecanisme",
+                          help="Mécanisme à explorer : sorry du Master "
+                               "(ex. energy_identity), hypothèse nommée "
+                               "(ex. H30) ou chantier (ex. 139)")
+    explorer.add_argument("--registre", default=None,
+                          help="Chemin du registre vivant des hypothèses "
+                               "(défaut : REGISTRE_HYPOTHESES_20260929.md du dépôt lean)")
+    explorer.add_argument("--dossier", default=None,
+                          help="Dossier pour les postérieurs des croyances et les traces "
+                               "d'oracle (défaut : ~/workspace/lean-navier-stokes ; "
+                               "ex. ~/workspace/quasicristal pour le programme quasicristaux)")
+    explorer.add_argument("--sortie", default=None,
+                          help="Fichier HTML de sortie "
+                               "(défaut : explorateur_<mecanisme>.html dans le répertoire courant)")
+    explorer.add_argument("--sans-oracle", action="store_true",
+                          help="Ne pas indexer les traces d'oracle (génération plus rapide)")
     return parser
 
 
@@ -353,86 +248,24 @@ Exemples :
 # COLLECTE DES FICHIERS (Suture des boucles LILITH)
 # ────────────────────────────────────────────────────────
 
-
-def _fichiers_depuis_dossier(dossier: str) -> List[str]:
-    """Collecte récursivement les fichiers supportés d'un dossier."""
-    fichiers: List[str] = []
+def _fichiers_depuis_dossier(dossier: str) -> list:
+    """Collecte récursivement les fichiers supportés d'un dossier (boucles isolées)."""
+    fichiers = []
     for racine, _, noms in os.walk(dossier):
         fichiers.extend(
             os.path.join(racine, nom)
             for nom in noms
-            if nom.lower().endswith(_EXTENSIONS_SUPPORTEES)
+            if est_fichier_supporte(nom)
         )
     return sorted(fichiers)
 
 
-def _collecter_fichiers(cible: str) -> List[str]:
-    """Retourne la liste des fichiers à auditer depuis un chemin."""
+def _collecter_fichiers(cible: str) -> list:
+    """Retourne la liste des fichiers sources à auditer depuis un chemin."""
     if os.path.isfile(cible):
-        return [cible] if cible.lower().endswith(_EXTENSIONS_SUPPORTEES) else []
+        return [cible] if est_fichier_supporte(cible) else []
     if os.path.isdir(cible):
         return _fichiers_depuis_dossier(cible)
-    return []
-
-
-def _verifier_et_collecter(cible: str, type_scan: str = "audit") -> List[str]:
-    """Collecte les fichiers et fournit un feedback granulaire en cas d'échec."""
-    if not os.path.exists(cible):
-        print(f"❌ Le chemin spécifié n'existe pas : {cible}")
-        sys.exit(1)
-
-    if type_scan == "scan":
-        fichiers = _collecter_fichiers_scan(cible)
-    else:
-        fichiers = _collecter_fichiers(cible)
-
-    if not fichiers:
-        if os.path.isfile(cible):
-            ext = os.path.splitext(cible)[1].lower()
-            if type_scan == "scan":
-                autorisees = _EXTENSIONS_SUPPORTEES + _EXTENSIONS_BINAIRES
-            else:
-                autorisees = _EXTENSIONS_SUPPORTEES
-            print(
-                f"❌ Le fichier '{cible}' n'est pas supporté (extension {ext or 'inconnue'})."
-            )
-            print(f"   Autorisées : {', '.join(autorisees)}")
-        else:
-            # Feedback granulé (Suture bot review)
-            print(f"⚠️  Dossier vide ou sans fichiers supportés : {cible}")
-            print(f"   Recherche typée : {type_scan}")
-        sys.exit(1)
-
-    return fichiers
-
-
-def _fichiers_depuis_dossier_scan(dossier: str) -> List[str]:
-    """Collecte récursivement les fichiers scannables d'un dossier (source + binaire).
-
-    Fournit un feedback explicite si aucun fichier supporté n'est trouvé
-    (Suture ReviewBot — conseil : pas de retour silencieux).
-    """
-    toutes = _EXTENSIONS_SUPPORTEES + _EXTENSIONS_BINAIRES
-    fichiers: List[str] = []
-    for racine, _, noms in os.walk(dossier):
-        fichiers.extend(
-            os.path.join(racine, nom) for nom in noms if nom.lower().endswith(toutes)
-        )
-    if not fichiers:
-        print(
-            f"\u26a0\ufe0f  Aucun fichier supporté trouvé dans : {dossier}\n"
-            f"   Extensions recherchées : {', '.join(toutes)}"
-        )
-    return sorted(fichiers)
-
-
-def _collecter_fichiers_scan(cible: str) -> List[str]:
-    """Retourne la liste des fichiers à scanner (source + binaire)."""
-    if os.path.isfile(cible):
-        # Accept any file for scanning (even without known extension)
-        return [cible]
-    if os.path.isdir(cible):
-        return _fichiers_depuis_dossier_scan(cible)
     return []
 
 
@@ -440,88 +273,65 @@ def _collecter_fichiers_scan(cible: str) -> List[str]:
 # EXÉCUTION DES SOUS-COMMANDES (une fonction par rôle)
 # ────────────────────────────────────────────────────────
 
-
-def _executer_check(args: argparse.Namespace, fichiers: List[str]) -> int:
+def _executer_check(args: argparse.Namespace, fichiers: list) -> int:
     """Exécute la sous-commande 'check'. Retourne le code de sortie."""
-    if args.format == "json":
-        return _executer_check_json(args, fichiers)
+    # Si la cible est un dossier avec plus d'un fichier et que le format est console, afficher d'abord la matrice
+    if os.path.isdir(args.cible) and len(fichiers) > 1 and args.format == "console":
+        from . import rapport_matrice_console
+        print(rapport_matrice_console(args.cible))
+        print()
+
     exit_code = 0
     for fichier in fichiers:
         exit_code = max(exit_code, _auditer_un_fichier(fichier, args))
     return exit_code
 
 
-def _executer_check_json(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Exécute 'check --format json' : collecte tous les résultats et émet un tableau JSON unique."""
-    import json as _json
-
-    resultats = []
-    exit_code = 0
-    for fichier in fichiers:
-        try:
-            data = _json.loads(rapport_json(fichier))
-            resultats.append(data)
-            if args.min_radiance > 0 and data.get("radiance", 0) < args.min_radiance:
-                exit_code = 1
-        except SyntaxError as e:
-            resultats.append({"fichier": fichier, "erreur": str(e)})
-            exit_code = 1
-        except Exception as e:
-            resultats.append({"fichier": fichier, "erreur": str(e)})
-            exit_code = 1
-    sortie = resultats[0] if len(resultats) == 1 else resultats
-    print(_json.dumps(sortie, ensure_ascii=False))
-    return exit_code
-
-
-def _auditer_un_fichier(  # phi: ignore[CYCLOMATIQUE]
-    fichier: str, args: argparse.Namespace
-) -> int:
-    """Audite un seul fichier et affiche le résultat (format console). Retourne 0 ou 1."""
+def _auditer_un_fichier(fichier: str, args: argparse.Namespace) -> int:
+    """Audite un seul fichier et affiche le résultat. Retourne 0 ou 1."""
+    lang = getattr(args, "lang", None)
     try:
-        print(rapport_console(fichier))
-        if getattr(args, "bmad", False):
-            _afficher_bmad(fichier)
+        if args.format == "json":
+            print(rapport_json(fichier, lang=lang))
+        elif args.format == "sarif":
+            print(rapport_sarif(fichier, lang=lang))
+        else:
+            print(rapport_console(fichier, lang=lang))
+            print()
 
-        # Phase 12 : Vérification du Sceau Gnostique
-        try:
-            from .gnose import MoteurGnostique
-            from .analyseur import AnalyseurPhi
-
-            gnose = MoteurGnostique()
-            analyseur = AnalyseurPhi(fichier)
-            resultat = analyseur.analyser()
-            if gnose.verifier(resultat):
-                print("  🛡  SCEAU GNOSTIQUE : Vérifié (Résonance Intacte) ✦")
-            else:
-                # On vérifie si un sceau existe pour ce fichier
-                import json
-
-                if os.path.exists(gnose.gnose_path):
-                    with open(gnose.gnose_path, "r") as f:
-                        if resultat.fichier in json.load(f):
-                            print(
-                                "  ⚠  SCEAU BRISÉ : Divergence spectrale détectée ! ░"
-                            )
-        except Exception:
-            pass
-
-        # Phase 11 : Enregistrement Akashique automatique
-        try:
-            from .akasha import RegistreAkashique
-
-            akasha = RegistreAkashique()
-            akasha.enregistrer(auditer(fichier))
-        except Exception:
-            pass
-        print()
-
-        if args.min_radiance > 0:
-            metriques = auditer(fichier)
-            if metriques["radiance"] < args.min_radiance:
+        seuil = getattr(args, "min_radiance", 0) or 0
+        formule = getattr(args, "formule", None)
+        gate = getattr(args, "gate", None)
+        if seuil > 0 or formule or gate:
+            metriques = auditer(fichier, lang=lang)
+            if seuil > 0 and metriques["radiance"] < seuil:
                 return 1
+            if formule or gate:
+                from .formules import construire_env, evaluer_formule, evaluer_gate
+                env = construire_env(metriques)
+                if formule:
+                    try:
+                        valeur = evaluer_formule(formule, env)
+                    except Exception as e:
+                        print(f"  ⚠ Formule invalide : {e}")
+                        return 1
+                    print(f"  ◈ Formule : {formule} = {valeur}")
+                if gate:
+                    try:
+                        ouverte = evaluer_gate(gate, env)
+                    except Exception as e:
+                        print(f"  ⚠ Porte invalide : {e}")
+                        return 1
+                    symbole = "✓" if ouverte else "✗"
+                    etat = "OUVERTE" if ouverte else "FERMEE"
+                    print(f"  ◈ Porte : {gate} -> {etat} {symbole}")
+                    if not ouverte:
+                        return 1
     except SyntaxError as e:
         print(f"⚠ Erreur de syntaxe dans {fichier}: {e}")
+        return 1
+    except (ImportError, ValueError) as e:
+        print(f"⚠ {e}")
         return 1
     except Exception as e:
         print(f"⚠ Erreur lors de l'analyse de {fichier}: {e}")
@@ -529,45 +339,13 @@ def _auditer_un_fichier(  # phi: ignore[CYCLOMATIQUE]
     return 0
 
 
-def _afficher_bmad(fichier: str) -> None:
-    """Affiche la répartition de la radiance entre les agents BMAD."""
-    from .bmad import OrchestrateurBMAD
-    from . import auditer as phi_auditer
-
-    metrics = phi_auditer(fichier)
-    orchestrateur = OrchestrateurBMAD()
-
-    # Simulation de répartition basée sur les métriques réelles
-    scores_bruts = {
-        "AG-01": metrics["radiance"] / 100,
-        "AG-02": (
-            1.0 - (metrics["lilith_variance"] / 1000)
-            if metrics["lilith_variance"] < 1000
-            else 0.1
-        ),
-        "AG-03": 0.9 if metrics["oudjat"] else 0.5,
-    }
-    resonance = orchestrateur.calculer_resonance_dirichlet(scores_bruts)
-
-    print("  ◈ RÉSONANCE DES AGENTS BMAD :")
-    for nom, score in list(resonance.items())[:6]:
-        barre = "█" * int(score * 10)
-        print(f"    - {nom:<20} : {barre:<10} {score * 100:>5.1f}%")
-
-    print("\n  ⚛ SUPRACONDUCTIVITÉ (PHASE 10) :")
-    omega = metrics["resistance"]
-    res_barre = "░" * int(min(10, omega * 10))
-    print(f"    - Résistance Ω       : {res_barre:<10} {omega:.4f} (friction)")
-    print(f"    - Pôle Alpha         : Ligne {metrics['pole_alpha']}")
-    print(f"    - Pôle Omega         : Ligne {metrics['pole_omega']}")
-
-
-def _executer_report(args: argparse.Namespace, fichiers: List[str]) -> int:
+def _executer_report(args: argparse.Namespace, fichiers: list) -> int:
     """Exécute la sous-commande 'report'. Retourne le code de sortie."""
+    lang = getattr(args, "lang", None)
     for fichier in fichiers:
         sortie = _nom_rapport(fichier, args.output)
         try:
-            rapport_markdown(fichier, sortie=sortie)
+            rapport_markdown(fichier, sortie=sortie, lang=lang)
             print(f"✦ Rapport sauvegardé : {sortie}")
         except Exception as e:
             print(f"❌ Erreur : {e}")
@@ -575,7 +353,7 @@ def _executer_report(args: argparse.Namespace, fichiers: List[str]) -> int:
     return 0
 
 
-def _nom_rapport(fichier: str, sortie_demandee: Optional[str]) -> str:
+def _nom_rapport(fichier: str, sortie_demandee: str) -> str:
     """Calcule le nom du fichier rapport de sortie."""
     if sortie_demandee:
         return sortie_demandee
@@ -583,588 +361,461 @@ def _nom_rapport(fichier: str, sortie_demandee: Optional[str]) -> str:
     return f"RAPPORT_PHI_{base}.md"
 
 
-def _executer_suture(args: argparse.Namespace) -> int:
-    """Exécute la commande de suture via Phidélia."""
-    from . import suture as phi_suture
-
-    print(f"  ◈  Inspiration de Phidélia pour {args.path}...")
-    try:
-        suggestion = phi_suture(args.path, api_url=args.url)
-        print("\n" + suggestion)
-        return 0
-    except Exception as e:
-        print(f"  ❌ Erreur lors de la suture : {e}")
-        return 1
-
-
-def _executer_seal(args: argparse.Namespace) -> int:
-    """Phase 12 : Appose un sceau gnostique permanent sur un fichier."""
-    from .gnose import MoteurGnostique
-    from .analyseur import AnalyseurPhi
-
-    print(f"  🛡  Scellement gnostique de {args.cible}...")
-    try:
-        analyseur = AnalyseurPhi(args.cible)
-        resultat = analyseur.analyser()
-        gnose = MoteurGnostique()
-        sceau = gnose.sceller(resultat)
-        print(f"      Sceau apposé : {sceau[:16]}... (Z[φ] Resonance Locked)")
-        return 0
-    except Exception as e:
-        print(f"  ❌ Erreur de scellement : {e}")
-        return 1
-
-
-def _executer_heal(args: argparse.Namespace) -> int:
-    """Phase 12 : Tente une guérison autonome du fichier."""
-    from .autosuture import AutoSuture
-
-    print(f"  ⚕  Tentative de guérison autonome pour {args.cible}...")
-    try:
-        medecin = AutoSuture(api_url=args.url)
-        verdict = medecin.guerir(args.cible, force=args.force)
-        print(f"\n  {verdict}")
-        return 0
-    except Exception as e:
-        print(f"  ❌ Échec de la guérison : {e}")
-        return 1
-
-
-def _executer_metadata(args: argparse.Namespace) -> int:
-    """Phase 15 : Synthèse et purge souveraine des métadonnées."""
-    from .metadata_ops import (
-        default_sanitized_path,
-        format_summary_text,
-        sanitize_harvest,
-        summarize_metadata,
-    )
-
-    metadata_action = getattr(args, "metadata_action", None)
-    if metadata_action not in {"summary", "purge"}:
-        print("❌ Commande 'metadata' requiert une action : summary ou purge.")
-        metadata_parser = getattr(args, "_metadata_parser", None)
-        if metadata_parser is not None:
-            metadata_parser.print_help()
-        else:
-            print("ℹ️ Utilisez : phi metadata {summary|purge} --help")
-        return 1
-
-    if metadata_action == "summary":
+def _executer_infer(args: argparse.Namespace, fichiers: list) -> int:
+    """Exécute la sous-commande 'infer' (moteur bayésien)."""
+    from . import diagnostic_bayesien
+    import json
+    lang = getattr(args, "lang", None)
+    exact = True if getattr(args, "exact", False) else None
+    for fichier in fichiers:
         try:
-            resume = summarize_metadata(args.harvest, args.vault_index)
+            diag = diagnostic_bayesien(fichier, lang=lang, exact=exact)
             if args.format == "json":
-                print(json.dumps(resume, ensure_ascii=False, indent=2))
+                out = {
+                    "fichier": fichier,
+                    "hypothese_dominante": diag.hypothese_dominante,
+                    "probabilite_dominante": diag.probabilite_dominante,
+                    "gain_espere_radiance": diag.gain_espere_radiance,
+                    "action_recommandee": diag.action_recommandee,
+                    "posteriors": diag.posteriors,
+                    "auto_patch_suggestion": diag.auto_patch_suggestion,
+                }
+                if exact:
+                    # Clés EFT : uniquement en mode exact (JSON flottant inchangé).
+                    out["mode_arithmetique"] = diag.mode
+                    out["certifie"] = {h: c.vers_dict()
+                                       for h, c in diag.certifie.items()}
+                print(json.dumps(out, ensure_ascii=False, indent=2))
             else:
-                print(format_summary_text(resume))
-            return 0
-        except (ValueError, RuntimeError, OSError) as e:
-            print(f"❌ Erreur metadata : {e}")
-            return 1
+                print("╔════════════════════════════════════════════════════════════════════╗")
+                print("║      PHI-COMPLEXITY — INFÉRENCE BAYÉSIENNE & AUTO-SUTURE           ║")
+                print("╚════════════════════════════════════════════════════════════════════╝")
+                print(f"  📄 Fichier               : {fichier}")
+                print(f"  🎯 Hypothèse Dominante   : {diag.hypothese_dominante} (P = {diag.probabilite_dominante * 100:.1f}%)")
+                print(f"  📈 Gain Espéré Radiance  : +{diag.gain_espere_radiance:.1f} pts")
+                print(f"  🛠 Action Recommandée    : {diag.action_recommandee}")
+                print("\n  DISTRIBUTION A POSTERIORI P(H | Evidence) :")
+                for h, p in diag.posteriors.items():
+                    barre = "█" * int(p * 20) + "░" * (20 - int(p * 20))
+                    print(f"    {h:<18} : {barre} {p * 100:>5.1f}%")
+                if diag.auto_patch_suggestion:
+                    print("\n  🔮 PROPOSITION D'AUTO-SUTURE (SUGGESTION CHIRURGICALE) :")
+                    for ligne in diag.auto_patch_suggestion.splitlines():
+                        print(f"    {ligne}")
+                if diag.mode == "eft" and diag.certifie:
+                    print("\n  BORNES D'ERREUR CERTIFIÉES (EFT double-double) :")
+                    for h, c in diag.certifie.items():
+                        print(f"    {h:<18} : ±{c.borne_erreur:.3e}  "
+                              f"({c.nb_operations} ops, |hi|_max={c.magnitude_max:.4f})")
+                print("  ────────────────────────────────────────────────────────────────────\n")
         except Exception as e:
-            print(f"❌ Erreur metadata inattendue : {e}")
-            traceback.print_exc()
+            print(f"❌ Erreur lors de l'inférence sur {fichier}: {e}")
             return 1
-
-    if metadata_action == "purge":
-        try:
-            sortie = args.harvest if args.in_place else args.output
-            if not sortie:
-                sortie = default_sanitized_path(args.harvest)
-            resultat = sanitize_harvest(
-                args.harvest,
-                sortie,
-                strip_keys=args.strip,
-                strip_sensitive=args.strip_sensitive,
-                strip_labels=args.strip_labels,
-                keep_only_features=args.keep_features,
-            )
-            print(
-                f"✦ Corpus purgé → {resultat['output']} ({resultat['written']} vecteurs)"
-            )
-            if resultat["removed_keys"]:
-                print(f"  Clés retirées : {', '.join(resultat['removed_keys'])}")
-            if resultat["kept_features_only"]:
-                print(
-                    "  Mode features-only : seules les métriques structurelles sont conservées."
-                )
-            return 0
-        except (ValueError, RuntimeError, OSError) as e:
-            print(f"❌ Erreur metadata : {e}")
-            return 1
-        except Exception as e:
-            print(f"❌ Erreur metadata inattendue : {e}")
-            traceback.print_exc()
-            return 1
-
-    return 1
+    return 0
 
 
-def _executer_oracle(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 14 : Valide une release selon l'Oracle de Radiance."""
-    from .oracle import OracleRadiance
-
-    oracle = OracleRadiance()
-    verdict = oracle.valider_release(fichiers, args.min_radiance, args.nb_tests)
-    print(oracle.rapport_oracle(verdict))
-    return 0 if verdict["acceptee"] else 1
-
-
-def _executer_harvest(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 14 : Collecter des vecteurs AST anonymisés (phi-harvest)."""
-    from .harvest import HarvestEngine
-
-    # Vérification proactive du dossier de sortie (Suture bot review)
-    if args.output:
-        output_dir = os.path.dirname(os.path.abspath(args.output))
-        if not os.path.exists(output_dir):
-            print(f"❌ Le dossier de sortie harvest n'existe pas : {output_dir}")
-            return 1
-        if not os.access(output_dir, os.W_OK):
-            print(f"❌ Pas de droits d'écriture dans le dossier harvest : {output_dir}")
-            return 1
-
-    engine = HarvestEngine(sortie=args.output)
-    nb_collectes = 0
-    nb_erreurs = 0
+def _executer_edit(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'edit' : ouvre l'éditeur phi (TUI curses)."""
+    from .editeur import lancer_editeur
     try:
-        for fichier in fichiers:
-            try:
-                engine.collecter_et_exporter(fichier)
-                nb_collectes += 1
-            except Exception as e:
-                print(f"  ⚠  {fichier} : {e}")
-                nb_erreurs += 1
-        print(f"\n  ✦  {nb_collectes} vecteur(s) collecté(s) → {args.output}")
-        print(engine.rapport_harvest())
-    finally:
-        # Nettoyage des ressources du moteur (Suture ReviewBot — conseil #3)
-        if hasattr(engine, "close"):
-            engine.close()
-    return 1 if nb_erreurs > 0 else 0
+        lancer_editeur(args.cible, projet=getattr(args, "projet", None),
+                       lang=getattr(args, "lang", None))
+    except Exception as e:
+        print(f"❌ Erreur de l'éditeur : {e}")
+        return 1
+    return 0
 
-
-def _executer_spiral(fichiers: List[str]) -> int:
-    """Phase 14 : Affiche la Spirale Dorée de radiance pour chaque fichier."""
-    from . import auditer as phi_auditer
-    from .rapport import GenerateurRapport
-
-    for fichier in fichiers:
-        try:
-            metriques = phi_auditer(fichier)
-            gen = GenerateurRapport(metriques)
-            print(f"\n  📄 {fichier}")
-            print(gen.spirale_doree())
-        except Exception as e:
-            print(f"  ❌ {fichier} : {e}")
-            return 1
+def _executer_index(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'index' : carte du projet (console ou json)."""
+    import json
+    from . import carte_projet
+    from .carte import carte_console
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    from .editeur.indexeur import EXCLUSIONS_DEFAUT
+    from .langs import treesitter_disponible
+    if getattr(args, "no_exclude", False):
+        exclusions = []
+    else:
+        exclusions = list(EXCLUSIONS_DEFAUT)
+        supplement = getattr(args, "exclude", None)
+        if supplement:
+            exclusions += [e.strip() for e in supplement.split(",") if e.strip()]
+    if not treesitter_disponible():
+        # stderr : ne jamais polluer le JSON sur stdout (agents, jq).
+        print("\u26a0 'tree-sitter-language-pack' non installé : "
+              "seuls les langages natifs (python) seront analysés. "
+              "Voir la section AVERTISSEMENTS de la carte ; "
+              "installation : pip install phi-complexity[multilang].",
+              file=sys.stderr)
+    try:
+        carte = carte_projet(dossier, lang=getattr(args, "lang", None),
+                             exclusions=exclusions,
+                             complet=not getattr(args, "rapide", False))
+    except Exception as e:
+        print(f"❌ Erreur lors de la cartographie : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(carte, ensure_ascii=False, indent=2))
+    else:
+        print(carte_console(carte))
     return 0
 
 
-def _executer_memory() -> int:
-    """Affiche les annales akashiques avec le moteur holographique."""
-    from .akasha import RegistreAkashique, MatriceHolographique
-    import time
+def _exclusions_depuis_args(args) -> list:
+    """Exclusions effectives depuis les flags --exclude/--no-exclude."""
+    from .editeur.indexeur import EXCLUSIONS_DEFAUT
+    if getattr(args, "no_exclude", False):
+        return []
+    exclusions = list(EXCLUSIONS_DEFAUT)
+    supplement = getattr(args, "exclude", None)
+    if supplement:
+        exclusions += [e.strip() for e in supplement.split(",") if e.strip()]
+    return exclusions
 
-    akasha = RegistreAkashique()
-    annales = akasha.consulter_historique(10)
 
-    print("\n  𓂀  ANNALES AKASHIQUES — MÉMOIRE HOLOGRAPHIQUE")
-    print("  " + "─" * 45)
-
-    if not annales:
-        print("      L'Akasha est encore vierge. Lancez un audit pour l'élever.")
-        return 0
-
-    for i, entry in enumerate(annales):
-        timestamp = entry.get("timestamp", time.time())
-        date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(timestamp))
-        f = os.path.basename(entry["fichier"])
-        print(f"\n  [{i + 1}] {f} — {date_str}")
-        print(
-            f"      Radiance: {entry['radiance']:.1f} | Masse Harmonique: {entry.get('masse_harmonique', 'N/A')}"
-        )
-        print(f"      Cohérence C_bit: {entry.get('coherence_c_bit', 'N/A')}%")
-
-        # Affichage du dôme de résonance si le vecteur est présent
-        if "vecteur" in entry:
-            # Reconstruction de la matrice pour affichage
-            donnees_simulees = {
-                "radiance": entry["radiance"],
-                "resistance": entry.get("resistance", 0),
-                "lilith_variance": entry.get("lilith_variance", 0),
-                "shannon_entropy": entry.get("shannon_entropy", 0),
-                "phi_ratio": entry.get("phi_ratio", 0),
-            }
-            mat = MatriceHolographique(donnees_simulees)
-            mat.vecteur = entry["vecteur"]
-            print(mat.vers_grille())
-
-    print("\n  ◈  Utilisez 'phi suture <fichier>' pour puiser dans cette sagesse.")
+def _executer_snapshot(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'snapshot' : fige l'état, écrit l'enveloppe."""
+    import json
+    from datetime import datetime
+    from .veille import ecrire_snapshot, _causes_arriere_plan
+    from .langs.registry import EXTENSIONS_SUPPORTEES
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    # Durcissement 2026-10-01 : jamais de baseline sur un instrument
+    # dégradé (le 2026-09-30 a failli figer 33 symboles au lieu de 3566).
+    # La doctrine « pas de baseline sur signal dégradé » est désormais
+    # mécanique, pas disciplinaire.
+    causes = _causes_arriere_plan(
+        dossier, _exclusions_depuis_args(args), set(EXTENSIONS_SUPPORTEES))
+    if causes and not getattr(args, "force", False):
+        print("❌ Baseline REFUSÉE : l'instrument est dégradé —")
+        for c in causes:
+            print(f"   🔧 {c}")
+        print("   Réparez l'arrière-plan puis relancez "
+              "(ou --force en connaissance de cause).")
+        return 3
+    sortie = getattr(args, "out", None)
+    if not sortie:
+        horodatage = datetime.now().strftime("%Y%m%d_%H%M%S")
+        sortie = f"phi_snapshot_{horodatage}.json"
+    try:
+        enveloppe = ecrire_snapshot(dossier, sortie,
+                                    exclusions=_exclusions_depuis_args(args))
+    except Exception as e:
+        print(f"❌ Erreur lors du snapshot : {e}")
+        return 1
+    print(f"📸 Snapshot écrit : {sortie}")
+    print(f"   dossier : {enveloppe['dossier']}")
+    print(f"   date    : {enveloppe['date']}")
+    print(f"   symboles: {enveloppe['carte']['nb_symboles']} "
+          f"({enveloppe['carte']['nb_fichiers']} fichiers)")
+    print(f"   md5     : {enveloppe['md5_carte']}")
     return 0
 
 
-def _executer_fund() -> None:
-    """Affiche le message de soutien à la recherche souveraine."""
-    print(
-        """
-╔══════════════════════════════════════════════════╗
-║      PHI-COMPLEXITY — RECHERCHE SOUVERAINE       ║
-╚══════════════════════════════════════════════════╝
+def _executer_veille(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'veille' : diff contre la référence."""
+    import json
+    from .veille import charger_reference, comparer, veille_console
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    try:
+        ref = charger_reference(args.ref)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    try:
+        diff = comparer(ref, dossier,
+                        exclusions=_exclusions_depuis_args(args))
+    except Exception as e:
+        print(f"❌ Erreur lors de la veille : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(diff, ensure_ascii=False, indent=2))
+    else:
+        print(veille_console(diff))
+    # Durcissement 2026-10-01 : un instrument dégradé échoue bruyamment
+    # (exit 3, distinct de 2 = dégradation détectée). Jamais de ✅ STABLE
+    # sur un arrière-plan perdu.
+    if diff.get("instrument_degrade"):
+        print("❌ INSTRUMENT DÉGRADÉ — la veille refuse de rendre un verdict "
+              "sur un arrière-plan perdu.", file=sys.stderr)
+        return 3
+    return 0 if diff["verdict"] == "STABLE" else 2
 
-  ☼  Vous trouvez ce code RADIANT ?
-  ⚖  Soutenez la recherche sur le framework Φ-META.
 
-  Votre contribution permet d'étendre les frontières
-  de la mathématique algorithmique et de garantir
-  la souveraineté des intelligences de demain.
+def _executer_chemins(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'chemins' : carte croyante (console ou json)."""
+    import json
+    from . import chemins_croyants
+    from .croyances import chemins_console
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    from .editeur.indexeur import EXCLUSIONS_DEFAUT
+    if getattr(args, "no_exclude", False):
+        exclusions = []
+    else:
+        exclusions = list(EXCLUSIONS_DEFAUT)
+        supplement = getattr(args, "exclude", None)
+        if supplement:
+            exclusions += [e.strip() for e in supplement.split(",") if e.strip()]
+    try:
+        carte = chemins_croyants(dossier, lang=getattr(args, "lang", None),
+                                 exclusions=exclusions,
+                                 top=getattr(args, "top", 10),
+                                 exact=(True if getattr(args, "exact", False)
+                                        else None))
+    except Exception as e:
+        print(f"❌ Erreur lors du calcul des chemins : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(carte, ensure_ascii=False, indent=2))
+    else:
+        print(chemins_console(carte))
+    # Durcissement 2026-10-01 (audit) : `chemins` rendait une carte
+    # partielle SANS prévenir quand l'arrière-plan manquait — la même
+    # classe de silence que l'incident 3531 → 33 symboles du 2026-09-30
+    # (trouvé parce que `index` prévenait mais pas `chemins`).
+    # On surface l'avertissement comme `carte` le fait ; pas de
+    # changement de code de sortie (commande informative : le contrat
+    # exit-3 reste porté par `snapshot` et `veille`).
+    # En mode JSON, l'avertissement part sur stderr pour ne pas
+    # corrompre le document.
+    from .editeur.indexeur import fichiers_non_supportes
+    non_supportes = fichiers_non_supportes(
+        dossier, exclusions, langage=getattr(args, "lang", None))
+    if non_supportes:
+        canal = sys.stderr if getattr(args, "format", "console") == "json" \
+            else sys.stdout
+        print("⚠️  AVERTISSEMENT — fichiers SANS analyseur fonctionnel :",
+              file=canal)
+        for ns in non_supportes[:10]:
+            print(f"     • {ns['fichier']} ({ns['extension']}) : "
+                  f"{ns['raison']}", file=canal)
+        if len(non_supportes) > 10:
+            print(f"     … et {len(non_supportes) - 10} autres", file=canal)
+    return 0
 
-  🚀 SOUTENIR : https://github.com/sponsors/spockoo
-  ☕ BUY ME A COFFEE : https://www.buymeacoffee.com/mardeux777a
-  ◈  WEB : https://phidelia.dev
 
-  Merci de participer à la SUTURE universelle. ✦
+def _executer_oracle(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'oracle' : traces de raisonnement exhibées.
+
+    Cible fichier → moteur bayésien ; cible dossier → chemins croyants.
+    Les traces existent dans les deux modes arithmétiques ; `--exact`
+    ajoute la borne d'erreur certifiée (EFT) à chaque trace.
     """
-    )
-
-
-def _executer_vault(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 16 : Audite et enregistre dans le Phi Vault."""
-    from .vault import PhiVault
-
-    vault = PhiVault()
-    nb_erreurs = 0
-    for fichier in fichiers:
-        try:
-            metriques = auditer(fichier)
-            regressions = vault.detecter_regressions(metriques)
-            for reg in regressions:
-                print(f"  {reg}")
-            note_path = vault.enregistrer_audit(metriques)
-            radiance = metriques.get("radiance", 0.0)
-            print(f"  ✦ {fichier} → vault ({radiance:.1f}) : {note_path}")
-        except Exception as e:
-            print(f"  ❌ {fichier} : {e}")
-            nb_erreurs += 1
-    print(f"\n  ◈ {len(fichiers)} fichier(s) archivé(s) dans le Phi Vault.")
-    return 1 if nb_erreurs > 0 else 0
-
-
-def _executer_graph(args: argparse.Namespace) -> int:
-    """Phase 16 : Affiche le graphe de radiance du vault."""
+    import json
+    from .oracle import TraceurOracle, rendre_oracle_console
+    cible = args.cible
+    exact = True if getattr(args, "exact", False) else None
+    traceur = TraceurOracle()
     try:
-        from .vault import PhiVault
-
-        vault = PhiVault()
-        fmt = getattr(args, "format", "ascii")
-        if fmt == "dot":
-            print(vault.generer_graph())
+        if os.path.isfile(cible):
+            from . import diagnostic_bayesien
+            diagnostic_bayesien(cible,
+                                lang=getattr(args, "lang", None),
+                                exact=exact, traceur=traceur)
+        elif os.path.isdir(cible):
+            from . import chemins_croyants
+            from .editeur.indexeur import EXCLUSIONS_DEFAUT
+            chemins_croyants(cible, lang=getattr(args, "lang", None),
+                             exclusions=list(EXCLUSIONS_DEFAUT),
+                             top=getattr(args, "top", 10),
+                             exact=exact, traceur=traceur)
         else:
-            print(vault.generer_graph_ascii())
-        return 0
+            print(f"❌ Cible introuvable (ni fichier ni dossier) : {cible}")
+            return 1
     except Exception as e:
-        print(f"  ❌ Erreur lors de la génération du graphe : {e}")
+        print(f"❌ Erreur lors de l'interrogation de l'oracle : {e}")
         return 1
-
-
-def _executer_canvas(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 17 : Exporte un Canvas Obsidian du code audité."""
-    from .canvas import PhiCanvas
-
-    canvas = PhiCanvas()
-    for fichier in fichiers:
-        try:
-            metriques = auditer(fichier)
-            canvas.ajouter_fichier(metriques)
-        except Exception as e:
-            print(f"  ⚠ {fichier} : {e}")
-
-    sortie = args.output
-    canvas.exporter(sortie)
-    print(
-        f"  ✦ Canvas exporté : {sortie} ({len(canvas.nodes)} nœuds, {len(canvas.edges)} arêtes)"
-    )
-    return 0
-
-
-def _executer_search(args: argparse.Namespace) -> int:
-    """Phase 18 : Recherche sémantique dans le vault."""
-    from .search import PhiSearch
-
-    search = PhiSearch()
-
-    if args.statut:
-        resultats = search.chercher_par_statut(args.statut)
-        print(search.rapport_recherche(resultats, f"Statut: {args.statut}"))
-    elif args.etat_zero:
-        resultats = search.chercher_transitions_zero(args.etat_zero)
-        print(search.rapport_recherche(resultats, f"État Zéro: {args.etat_zero}"))
-    elif args.categorie:
-        resultats = search.chercher_annotations(args.categorie)
-        print(search.rapport_recherche(resultats, f"Catégorie: {args.categorie}"))
-    else:
-        resultats = search.chercher_par_radiance(args.min_radiance, args.max_radiance)
-        print(
-            search.rapport_recherche(
-                resultats,
-                f"Radiance [{args.min_radiance:.0f}-{args.max_radiance:.0f}]",
-            )
-        )
-    return 0
-
-
-def _executer_sbom(args: argparse.Namespace) -> int:
-    """Phase 20 : Génère le Software Bill of Materials."""
-    from .securite import exporter_sbom
-
-    sortie = args.output
-    exporter_sbom(sortie)
-    print(f"  ✦ SBOM exporté : {sortie}")
-    return 0
-
-
-def _executer_shield(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 22 : Audit sécurité unifié avec gate CI."""
-    from .securite import (
-        JournalAudit,
-        construire_audit_securite,
-        exporter_audit_securite,
-        journaliser_conflit_audit,
-        verifier_politique_securite,
-    )
-
-    if args.sarif and not os.path.exists(args.sarif):
-        print(f"❌ Fichier SARIF introuvable : {args.sarif}")
-        return 1
-
-    audit = construire_audit_securite(
-        fichiers=fichiers,
-        sarif_path=args.sarif,
-        include_demo=args.include_demo,
-    )
-    exporter_audit_securite(audit, args.output)
-
-    summary = audit["summary"]
-    score = float(summary["security_score"])
-    status = (
-        "PASS"
-        if verifier_politique_securite(audit, args.min_security_score)
-        else "FAIL"
-    )
-    oos = int(summary.get("out_of_scope_findings", 0))
-    print(
-        f"  ✦ Shield: {status} | score={score:.2f} | "
-        f"findings={summary['findings_total']} | blocking={summary['blocking_findings']}"
-        + (f" | out_of_scope={oos}" if oos else "")
-    )
-    print(f"  ✦ Audit exporté : {args.output}")
-
-    journal = JournalAudit()
-    journal.enregistrer(
-        "SECURITY_AUDIT",
-        {
-            "target_count": len(fichiers),
-            "score": score,
-            "status": status,
-            "blocking_findings": int(summary["blocking_findings"]),
-            "out_of_scope_findings": oos,
-            "sarif": args.sarif or "",
-        },
-    )
-    if status != "PASS" or audit.get("errors"):
-        conflit = journaliser_conflit_audit(
-            audit=audit,
-            sorties={
-                "summary": f"Shield: {status} | score={score:.2f}",
-                "stderr": "\n".join(audit.get("errors", [])),
-                "errors": audit.get("errors", []),
-            },
-            contexte={
-                "target_count": len(fichiers),
-                "sarif": args.sarif or "",
-            },
-        )
-        resolution = conflit.get("resolution", {})
-        print(
-            "  ✦ Consensus conflit: "
-            f"{resolution.get('decision', 'UNKNOWN')} | "
-            f"score={float(resolution.get('consensus_score', 0.0)):.2f}"
-        )
-    return 0 if status == "PASS" else 1
-
-
-def _executer_scan(args: argparse.Namespace, fichiers: List[str]) -> int:
-    """Phase 24 : Scanner des fichiers avec le φ-fingerprint antiviral."""
-    import json as _json
-    import os
-
-    from .fingerprint import FingerprintEngine
-    from .harvest import HarvestEngine
-
-    # Vérification proactive du dossier de harvest (Suture bot review)
-    if getattr(args, "harvest", False) and getattr(args, "output", None):
-        output_dir = os.path.dirname(os.path.abspath(args.output))
-        if not os.path.exists(output_dir):
-            print(f"❌ Le dossier de sortie harvest n'existe pas : {output_dir}")
+    traces = traceur.entrees
+    symbole = getattr(args, "symbole", None)
+    if symbole:
+        traces = traceur.filtrer(symbole)
+        if not traces:
+            print(f"⚠️ Aucune trace pour le symbole : {symbole}")
             return 1
-        if not os.access(output_dir, os.W_OK):
-            print(f"❌ Pas de droits d'écriture dans le dossier harvest : {output_dir}")
-            return 1
-
-    engine = FingerprintEngine()
-    resultats: List[Dict[str, Any]] = []
-    nb_suspects = 0
-
-    for fichier in fichiers:
-        try:
-            fp = engine.calculer(fichier)
-            entry: Dict[str, Any] = {
-                "fichier": fichier,
-                **fp.to_dict(),
-            }
-            resultats.append(entry)
-
-            if fp.classification != "SAIN":
-                nb_suspects += 1
-
-            if args.format == "console":
-                _afficher_scan_console(fichier, fp)
-
-            # Optionnel : collecter dans le corpus harvest
-            if getattr(args, "harvest", False):
-                try:
-                    harvest = HarvestEngine(sortie=args.output)
-                    harvest.collecter_et_exporter_fingerprint(fichier)
-                except Exception:
-                    pass
-
-        except Exception as e:
-            entry = {"fichier": fichier, "erreur": str(e)}
-            resultats.append(entry)
-            if args.format == "console":
-                print(f"  ❌ {fichier} : {e}")
-
-    if args.format == "json":
-        sortie = resultats[0] if len(resultats) == 1 else resultats
-        print(_json.dumps(sortie, ensure_ascii=False, indent=2))
-    elif args.format == "console":
-        _afficher_scan_resume(len(fichiers), nb_suspects)
-
-    return 1 if nb_suspects > 0 else 0
-
-
-def _afficher_scan_console(fichier: str, fp: PhiFingerprint) -> None:
-    """Affiche le résultat d'un scan en mode console."""
-    symboles = {
-        "SAIN": "✅",
-        "SUSPECT": "⚠️ ",
-        "MALVEILLANT": "🚨",
-    }
-    symbole = symboles.get(fp.classification, "❓")
-
-    pct = fp.score_anomalie * 100
-    barre_len = 20
-    rempli = int(pct / 100 * barre_len)
-    barre = "█" * rempli + "░" * (barre_len - rempli)
-
-    print(f"\n  📄 {fichier}")
-    print(f"      Format     : {fp.format_source}")
-    print(f"      Anomalie   : [{barre}] {pct:.1f}%")
-    print(f"      Verdict    : {symbole}  {fp.classification}")
-    print(f"      Sections   : {fp.nb_sections}")
-    print(f"      Vecteur φ  : [{', '.join(f'{v:.3f}' for v in fp.vecteur)}]")
-
-
-def _afficher_scan_resume(total: int, suspects: int) -> None:
-    """Affiche le résumé final du scan."""
-    print("\n╔══════════════════════════════════════════════════╗")
-    print("║   PHI-SENTINEL — SCAN ANTIVIRAL UNIVERSEL         ║")
-    print("╚══════════════════════════════════════════════════╝")
-    print(f"\n  ◈  Fichiers scannés   : {total}")
-    print(f"  ✅ Sains              : {total - suspects}")
-    if suspects > 0:
-        print(f"  ⚠  Suspects/Malveillants : {suspects}")
+    if getattr(args, "format", "console") == "json":
+        enveloppe = traceur.vers_json()
+        enveloppe["traces"] = [t.vers_dict() for t in traces]
+        enveloppe["nb_traces"] = len(traces)
+        if symbole:
+            enveloppe["filtre_symbole"] = symbole
+        print(json.dumps(enveloppe, ensure_ascii=False, indent=2))
     else:
-        print("  ✦  Aucune menace détectée.")
-    print("\n  ─────────────────────────────────────────────────")
-    print("  Ancré dans le Morphic Phi Framework — φ-Meta 2026")
+        print(rendre_oracle_console(traces))
+    return 0
 
 
-def _executer_ui() -> int:
-    """Phase 33 : Lance le backend FastAPI et ouvre le navigateur (IDE Web Local)."""
+def _executer_sonde(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'sonde' : les deux pôles A/B d'un mécanisme.
+
+    Ne touche à aucun JSON existant : sous-commande neuve, lecture seule
+    du registre. `--exact` / PHI_EFT=1 = vérification renforcée du parsing.
+    """
+    from .sondes import (
+        RegistreSondes, sonder, rendre_sonde_console, REGISTRE_DEFAUT,
+    )
+    import json
     try:
-        import uvicorn
-        import webbrowser
-        from threading import Timer
-
-        url = "http://127.0.0.1:8000"
-
-        def open_browser() -> None:
-            import urllib.request
-            import time
-            from urllib.error import URLError
-
-            # Polling robuste (Suture bot review)
-            # On attend que le serveur réponde réellement avant d'ouvrir
-            for i in range(50):
-                try:
-                    with urllib.request.urlopen(url) as response:
-                        if response.getcode() == 200:
-                            webbrowser.open(url)
-                            return
-                except (URLError, ConnectionResetError):
-                    time.sleep(0.2)
-
-        print("  ◈  Lancement de la Cyber Station Phidélia...")
-        print(f"  ◈  Interface locale : {url}")
-
-        # Déclenchement du monitor (Timer plus généreux pour l'init)
-        Timer(0.5, open_browser).start()
-        uvicorn.run(
-            "phi_complexity.web.server:app",
-            host="127.0.0.1",
-            port=8000,
-            reload=False,
-            log_level="warning",
-        )
-        return 0
-    except ImportError:
-        print("❌ Erreur : Le module web n'est pas installé.")
-        print("👉 Veuillez installer avec : pip install phi-complexity[web]")
+        from .eft import eft_active
+        exact = True if (getattr(args, "exact", False) or eft_active()) else False
+    except Exception:
+        exact = True if getattr(args, "exact", False) else False
+    chemin = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    if not os.path.isfile(chemin):
+        print(f"❌ Registre introuvable : {chemin}")
+        print("   (passez --registre CHEMIN vers le registre vivant des hypothèses)")
         return 1
-
-
-def _executer_pipeline(args: argparse.Namespace) -> int:
-    """Lance l'orchestrateur de pipeline en mode console (Diagnostic Profond)."""
     try:
-        import asyncio
-        from .pipeline.orchestrator import PipelineOrchestrator, PipelineSignal
+        registre = RegistreSondes().charger(chemin)
+        resultat = sonder(args.mecanisme, registre, exact=exact)
+    except Exception as e:
+        print(f"❌ Erreur lors du sondage : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        # Ancrage entropique (import direct d'entropie.py via ancrage.py —
+        # jamais de subprocess) : section `entropie` par nœud + mécanisme.
+        # Mode console inchangé (rapide, sans lentille).
+        try:
+            from .ancrage import attacher_entropie
+            from .entropie import posterieurs_symboles, DOSSIER_DEFAUT
+            dossier = getattr(args, "dossier", None) or DOSSIER_DEFAUT
+            if not os.path.isdir(dossier):
+                print(f"❌ Dossier introuvable pour les croyances : {dossier}")
+                return 1
+            attacher_entropie(resultat, registre, posterieurs_symboles(dossier))
+        except Exception as e:
+            print(f"❌ Erreur lors de l'ancrage entropique : {e}")
+            return 1
+        print(json.dumps(resultat.vers_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(rendre_sonde_console(resultat))
+    return 0
 
-        async def cli_signal_callback(signal: PipelineSignal) -> None:
-            # Affichage formaté pour la console (sans emoji pour compatibilité Windows)
-            print(f"  [PHI] [{signal.issuer}] {signal.action}: {signal.data}")
 
-        orchestrator = PipelineOrchestrator(signal_callback=cli_signal_callback)
+def _executer_ou_aller(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'ou-aller' : liste d'attention ordonnée.
 
-        print(f"\n  Lancement du Pipeline pour : '{args.concept}'")
-        print(f"  Dossier cible : {os.path.abspath(args.dir)}\n")
+    Lecture seule : ne touche à aucun JSON existant (registre, croyances,
+    veille). Le tri par coût de booléanisation décroissant n'est PAS un
+    score et PAS une P(A) : il ordonne où le typage porte le plus de bits.
+    L'instrument montre où regarder ; le veto de Tomy tranche.
+    """
+    from .ancrage import construire_ou_aller, rendre_ou_aller_console
+    from .entropie import posterieurs_symboles, DOSSIER_DEFAUT
+    from .sondes import RegistreSondes, REGISTRE_DEFAUT
+    import json
+    chemin = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    if not os.path.isfile(chemin):
+        print(f"❌ Registre introuvable : {chemin}")
+        print("   (passez --registre CHEMIN vers le registre vivant des hypothèses)")
+        return 1
+    dossier = getattr(args, "dossier", None) or DOSSIER_DEFAUT
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable pour les croyances : {dossier}")
+        return 1
+    try:
+        registre = RegistreSondes().charger(chemin)
+        posterieurs = posterieurs_symboles(dossier)
+        data = construire_ou_aller(registre, posterieurs)
+    except Exception as e:
+        print(f"❌ Erreur lors de « ou-aller » : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        print(rendre_ou_aller_console(data))
+    return 0
 
-        asyncio.run(orchestrator.run_pipeline(args.concept, args.dir))
-        return 0
-    except ImportError:
-        print("Error : Les dépendances du Pipeline (FastAPI/asyncio) sont incomplètes.")
-        print("   Installez les avec : pip install phi-complexity[web]")
+
+def _executer_explorer(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'explorer' : HTML autonome interactif.
+
+    Lecture seule : ne touche ni au registre, ni aux croyances, ni à la
+    veille. Import direct (explorateur.py), jamais de subprocess.
+    """
+    from .explorateur import explorer_vers_fichier
+    from .entropie import DOSSIER_DEFAUT
+    from .sondes import REGISTRE_DEFAUT
+    chemin = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    if not os.path.isfile(chemin):
+        print(f"❌ Registre introuvable : {chemin}")
+        print("   (passez --registre CHEMIN vers le registre vivant des hypothèses)")
+        return 1
+    dossier = getattr(args, "dossier", None) or DOSSIER_DEFAUT
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable pour les croyances : {dossier}")
+        return 1
+    try:
+        from .sondes import RegistreSondes
+        registre = RegistreSondes().charger(chemin)
+        sortie = explorer_vers_fichier(
+            args.mecanisme,
+            dossier=dossier,
+            sortie=getattr(args, "sortie", None),
+            registre=registre,
+            avec_oracle=not getattr(args, "sans_oracle", False),
+        )
+    except ValueError as e:
+        # Erreur propre (ex. mécanisme inconnu) : message, pas de traceback.
+        print(f"❌ {e}")
         return 1
     except Exception as e:
-        print(f"Error : Échec critique du Pipeline : {e}")
+        print(f"❌ Erreur lors de « explorer » : {e}")
         return 1
+    print(f"✅ Explorateur généré : {sortie}")
+    print("   (HTML autonome — ouvrez-le dans un navigateur, aucune connexion requise)")
+    return 0
+
+
+def _executer_entropie(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'entropie' : H et ΔH en bits sur la Sonde B.
+
+    Lecture seule : ne touche à aucun JSON existant (registre, croyances,
+    veille). Les bits mesurent l'attention de l'instrument, jamais P(A).
+    """
+    from .entropie import (
+        DOSSIER_DEFAUT, REGISTRE_DEFAUT, entropie_depuis_sonde,
+        rendre_entropie_console,
+    )
+    import json
+    chemin = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    if not os.path.isfile(chemin):
+        print(f"❌ Registre introuvable : {chemin}")
+        print("   (passez --registre CHEMIN vers le registre vivant des hypothèses)")
+        return 1
+    dossier = getattr(args, "dossier", None) or DOSSIER_DEFAUT
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable pour les croyances : {dossier}")
+        return 1
+    try:
+        resultat = entropie_depuis_sonde(args.mecanisme, dossier=dossier,
+                                         chemin_registre=chemin)
+    except Exception as e:
+        print(f"❌ Erreur lors du chiffrement entropique : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(resultat.vers_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(rendre_entropie_console(resultat))
+    return 0
 
 
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
 
-
-def main() -> None:  # phi: ignore[CYCLOMATIQUE]
+def main():
     """Point d'entrée principal. Délègue à des fonctions spécialisées."""
     parser = _construire_parseur()
     args = parser.parse_args()
@@ -1173,78 +824,63 @@ def main() -> None:  # phi: ignore[CYCLOMATIQUE]
         parser.print_help()
         sys.exit(0)
 
-    if args.commande == "ui":
-        sys.exit(_executer_ui())
+    if args.commande == "edit":
+        # L'éditeur accepte tout fichier texte, existant ou à créer :
+        # pas de collecte préalable de fichiers supportés.
+        sys.exit(_executer_edit(args))
 
-    if args.commande == "pipeline":
-        sys.exit(_executer_pipeline(args))
+    if args.commande == "index":
+        # La carte travaille sur un dossier (pas une liste de fichiers) :
+        # court-circuit avant la collecte.
+        sys.exit(_executer_index(args))
 
-    if args.commande == "memory":
-        sys.exit(_executer_memory())
+    if args.commande == "chemins":
+        # La carte croyante travaille aussi sur un dossier.
+        sys.exit(_executer_chemins(args))
 
-    if args.commande == "fund":
-        _executer_fund()
-        sys.exit(0)
+    if args.commande == "snapshot":
+        # Le snapshot fige un dossier : court-circuit avant la collecte.
+        sys.exit(_executer_snapshot(args))
 
-    if args.commande == "suture":
-        sys.exit(_executer_suture(args))
+    if args.commande == "veille":
+        # La veille compare un dossier à une référence.
+        sys.exit(_executer_veille(args))
 
-    if args.commande == "seal":
-        sys.exit(_executer_seal(args))
+    if args.commande == "oracle":
+        # L'oracle interroge un fichier OU un dossier : court-circuit
+        # avant la collecte de fichiers.
+        sys.exit(_executer_oracle(args))
 
-    if args.commande == "heal":
-        sys.exit(_executer_heal(args))
+    if args.commande == "sonde":
+        # La sonde lit le registre vivant : court-circuit avant la collecte.
+        sys.exit(_executer_sonde(args))
 
-    # Phase 16 — commandes sans collecte de fichiers
-    if args.commande == "graph":
-        sys.exit(_executer_graph(args))
+    if args.commande == "entropie":
+        # La lentille entropique lit registre + croyances : court-circuit.
+        sys.exit(_executer_entropie(args))
 
-    # Phase 18 — recherche dans le vault
-    if args.commande == "search":
-        sys.exit(_executer_search(args))
+    if args.commande == "ou-aller":
+        # La liste d'attention lit registre + croyances : court-circuit.
+        sys.exit(_executer_ou_aller(args))
 
-    # Phase 20 — SBOM
-    if args.commande == "sbom":
-        sys.exit(_executer_sbom(args))
+    if args.commande == "explorer":
+        # L'explorateur lit registre + croyances et écrit un HTML : court-circuit.
+        sys.exit(_executer_explorer(args))
 
-    if args.commande == "metadata":
-        sys.exit(_executer_metadata(args))
-
-    # Phase 14 — commandes sans collecte de fichiers préalable
-    if args.commande == "spiral":
-        fichiers = _verifier_et_collecter(args.cible, type_scan="audit")
-        sys.exit(_executer_spiral(fichiers))
-
-    # Phase 24 — scan antiviral (accepte source + binaire)
-    if args.commande == "scan":
-        fichiers = _verifier_et_collecter(args.cible, type_scan="scan")
-        sys.exit(_executer_scan(args, fichiers))
-
-    fichiers = _verifier_et_collecter(args.cible, type_scan="audit")
-
-    # Validation d'existence et d'accessibilité (Suture ReviewBot — conseil #2)
-    for f in fichiers:
-        if not os.path.isfile(f) or not os.access(f, os.R_OK):
-            print(f"\u274c Fichier inaccessible : {f}")
-            sys.exit(1)
+    fichiers = _collecter_fichiers(args.cible)
+    if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):
+        # Fichier sans extension reconnue mais langage forcé explicitement
+        fichiers = [args.cible]
+    if not fichiers:
+        print(f"❌ Aucun fichier supporté trouvé dans : {args.cible}")
+        sys.exit(1)
 
     if args.commande == "check":
         sys.exit(_executer_check(args, fichiers))
     elif args.commande == "report":
         sys.exit(_executer_report(args, fichiers))
-    elif args.commande == "oracle":
-        sys.exit(_executer_oracle(args, fichiers))
-    elif args.commande == "harvest":
-        sys.exit(_executer_harvest(args, fichiers))
-    elif args.commande == "vault":
-        sys.exit(_executer_vault(args, fichiers))
-    elif args.commande == "canvas":
-        sys.exit(_executer_canvas(args, fichiers))
-    elif args.commande == "shield":
-        sys.exit(_executer_shield(args, fichiers))
-    else:
-        print(f"❌ Commande inconnue : {args.commande}")
-        sys.exit(1)
+    elif args.commande == "infer":
+        sys.exit(_executer_infer(args, fichiers))
 
 
 if __name__ == "__main__":
