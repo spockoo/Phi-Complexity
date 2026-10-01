@@ -254,9 +254,10 @@ Exemples :
                                      metavar="K",
                                      help="Encerclement des directions INCONNU : "
                                           "sonde chaque direction sous au plus K angles "
-                                          "Lean (dépliage profond, coercition explicite, "
-                                          "sous-termes) sans jamais la fermer au premier "
-                                          "contact. Statuts typés du dossier : ENCERCLE "
+                                          "Lean (câblage direct, dépliage profond, "
+                                          "coercition explicite, sous-termes) sans jamais "
+                                          "la fermer au premier contact. Statuts typés du "
+                                          "dossier : ENCERCLE "
                                           "(Lean a tranché → registre), RESISTANT "
                                           "(mécanisme sensible → escaladé), "
                                           "ATTEIGNABLE_TROUVE (câblage prouvé → escaladé). "
@@ -906,10 +907,12 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         fichier_verification,
         inscrire_impossible_valide,
         interpreter_solidite,
+        lire_dossiers_encerclement,
         realiser_chemins,
         rendre_chemins,
         rendre_console,
         verdict_lean,
+        _cle_registre,
     )
     from .piste_sorry import decaper_lean
     dossier = args.dossier
@@ -1089,9 +1092,26 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                      "erreurs": []}
         for i, c in enumerate(res["candidats"]):
             # échantillon stratifié : tourniquet sur les trous (même
-            # discipline que --valider-solidite).
+            # discipline que --valider-solidite). Durcissement
+            # (2026-10-01) : on exclut les directions déjà encerclées
+            # (dossier existant, quel que soit le statut) pour ne pas
+            # re-sonder les RÉSISTANT à chaque vague — le dossier fait
+            # foi, le ré-examen passe par l'escalade explicite.
+            try:
+                dossiers_connus = lire_dossiers_encerclement()
+            except ErreurRegistre as e:
+                print(f"⚠️  dossiers illisibles ({e}) : pas de "
+                      f"déduplication", file=sys.stderr)
+                dossiers_connus = {}
+            def deja_encerclé(p, _c=c):
+                cle = _cle_registre(args.sorry, _c["declaration"],
+                                    p["trou"], p["type_trou"], p["terme"],
+                                    empreinte)
+                return cle in dossiers_connus
             par_trou = {}
             for p in c.get("inconnus", []):
+                if deja_encerclé(p):
+                    continue
                 par_trou.setdefault(p["trou"], []).append(p)
             trous = list(par_trou)
             echantillon, k = [], 0
