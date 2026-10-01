@@ -88,6 +88,13 @@ class Candidat:
     squelette: str
     score: float
     raisons: list = field(default_factory=list)
+    #: Mesure des directions par trou (trois zones ATTEIGNABLE / IMPOSSIBLE /
+    #: INCONNU) — annotation seulement, aucun élagage avant validation de
+    #: solidité par Lean (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md).
+    directions: dict = field(default_factory=dict)
+    #: Directions prédites IMPOSSIBLE : [{"trou", "type_trou", "terme",
+    #: "raison"}] — pour la validation de solidité (`--valider-solidite`).
+    impossibles: list = field(default_factory=list)
 
 
 def module_depuis_fichier(dossier: str, chemin: str) -> str:
@@ -685,25 +692,92 @@ def _defs_corps(dossier: str) -> dict:
     return res
 
 
-def _deplier(t: str, defs: dict, prof: int = 0) -> str:
-    """Remplace les noms de defs simples par leur corps (borné)."""
-    if prof >= _PROF_DEPLIAGE or not t:
-        return _normaliser_type(t)
-    out = _normaliser_type(t)
-    for nom, corps in defs.items():
-        if not corps or len(corps) > 2000:
-            continue
-        # mot entier, pas de récursion directe ; le corps source porte déjà
-        # ses propres parenthèses — pas de wrapping ajouté (il casserait
-        # l'égalité syntaxique en comparaison de types).
-        if re.search(rf"(?<![\w'])({re.escape(nom)})(?![\w'])", out):
-            if nom in corps:
+class _Deplieur:
+    """Dépliage précompilé à sémantique identique à l'ancienne boucle.
+
+    Constat le 2026-10-01 : l'ancienne implémentation balayait tout le
+    corpus (583 defs sur energy_identity) avec un regex compilé à la volée
+    par nom et par niveau de dépliage — ~6 dépliages par paire (trou,
+    terme) rendaient la mesure des directions inutilisable à l'échelle
+    réelle (>6 min pour un seul candidat, sans explosion de taille).
+    Ici : un seul balayage combiné repère les noms présents, puis la
+    substitution reste séquentielle dans l'ordre d'insertion du corpus —
+    exactement les mêmes opérations (même ordre, même borne de
+    profondeur, même gestion de la récursion directe), sans les centaines
+    de recherches vides. Les tests `test_temoin_*` verrouillent la
+    sémantique (chaîne en ordre inverse = un cran par passe).
+    """
+
+    def __init__(self, defs: dict):
+        self.defs = defs
+        # miroir exact des conditions de l'ancienne boucle
+        self.depliables = {
+            nom: corps for nom, corps in defs.items()
+            if corps and len(corps) <= 2000 and nom not in corps
+        }
+        self.ordre = list(self.depliables)
+        self.motifs = {
+            nom: re.compile(rf"(?<![\w'])({re.escape(nom)})(?![\w'])")
+            for nom in self.ordre
+        }
+        if self.ordre:
+            alt = "|".join(re.escape(n) for n in
+                           sorted(self.ordre, key=len, reverse=True))
+            self.combine = re.compile(rf"(?<![\w'])({alt})(?![\w'])")
+        else:
+            self.combine = None
+
+    def presents(self, t: str) -> set:
+        """Noms dépliables présents dans t (un seul balayage)."""
+        if not self.combine:
+            return set()
+        return {m.group(1) for m in self.combine.finditer(t)}
+
+    def deplier(self, t: str, prof: int = 0) -> str:
+        """Remplace les noms de defs simples par leur corps (borné)."""
+        if prof >= _PROF_DEPLIAGE or not t:
+            return _normaliser_type(t)
+        out = _normaliser_type(t)
+        presents = self.presents(out)
+        for nom in self.ordre:
+            if nom not in presents:
                 continue
-            out = re.sub(rf"(?<![\w'])({re.escape(nom)})(?![\w'])",
-                         corps, out)
-    if out != _normaliser_type(t):
-        return _deplier(out, defs, prof + 1)
-    return out
+            nouveau = self.motifs[nom].sub(self.depliables[nom], out)
+            if nouveau != out:
+                out = nouveau
+                # le corps substitué peut introduire d'autres noms
+                presents |= self.presents(out)
+        if out != _normaliser_type(t):
+            return self.deplier(out, prof + 1)
+        return out
+
+    def reste(self, t: str) -> bool:
+        """Reste-t-il un nom dépliable dans t ? (un seul balayage)."""
+        return self.combine.search(t) is not None if self.combine else False
+
+
+_DEPLIEURS: dict = {}
+
+
+def _deplieur_pour(defs: dict) -> _Deplieur:
+    """_Deplieur précompilé pour ce corpus (cache borné, identité vérifiée —
+    un id réutilisé après gc ne peut pas empoisonner le cache)."""
+    key = id(defs)
+    d = _DEPLIEURS.get(key)
+    if d is None or d.defs is not defs:
+        if len(_DEPLIEURS) > 8:
+            _DEPLIEURS.clear()
+        d = _Deplieur(defs)
+        _DEPLIEURS[key] = d
+    return d
+
+
+def _deplier(t: str, defs: dict, prof: int = 0) -> str:
+    """Remplace les noms de defs simples par leur corps (borné).
+
+    Délègue au _Deplieur précompilé : même sémantique, sans les balayages
+    vides du corpus (performance à l'échelle réelle)."""
+    return _deplieur_pour(defs).deplier(t, prof)
 
 
 def _types_equivalents(t1: str, t2: str, defs: dict) -> bool:
@@ -930,10 +1004,237 @@ def _synthetiser_trou(type_cible: str, contexte: list, structures: dict,
     return None, "non synthétisable (trou honnête)"
 
 
+# ---------------------------------------------------------------------------
+# Atteignabilité typée à trois zones (chantier 2026-10-01, aval Tomy).
+# Discipline : docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md
+# ---------------------------------------------------------------------------
+
+_PAIRES_COERCITION = frozenset({
+    frozenset({"ℕ", "ℤ"}), frozenset({"ℕ", "ℚ"}), frozenset({"ℕ", "ℝ"}),
+    frozenset({"ℤ", "ℚ"}), frozenset({"ℤ", "ℝ"}), frozenset({"ℚ", "ℝ"}),
+    frozenset({"ℝ", "ℂ"}), frozenset({"ℚ", "ℂ"}),
+    frozenset({"Fin", "ℕ"}),
+})
+"""Paires (non ordonnées) de têtes de types entre lesquelles Lean peut
+insérer une coercition automatique : un mismatch sur une telle paire n'est
+jamais déclaré IMPOSSIBLE (conservateur — INCONNU n'est jamais un
+IMPOSSIBLE déguisé). Toute paire manquante sera attrapée par la validation
+de solidité (Lean tranche) → durcissement."""
+
+
+def _est_depliable(nom: str, defs: dict) -> bool:
+    """Un nom de def est-il dépliable ? (miroir des conditions de `_deplier`)."""
+    corps = defs.get(nom)
+    if not corps or len(corps) > 2000:
+        return False
+    if nom in corps:  # récursion directe
+        return False
+    return True
+
+
+def _reste_depliable(t: str, defs: dict) -> bool:
+    """Reste-t-il des noms de defs dépliables dans le type normalisé ?
+
+    Un seul balayage via le _Deplieur précompilé (l'ancienne boucle
+    testait chaque nom du corpus séparément)."""
+    return _deplieur_pour(defs).reste(t)
+
+
+def _deplier_temoin(t: str, defs: dict) -> tuple:
+    """Dépliage avec témoin d'exhaustivité : (type_normalisé, reste).
+    `reste` = True ssi la borne a stoppé le dépliage alors qu'il restait
+    des définitions dépliables → INCONNU honnête, jamais IMPOSSIBLE."""
+    nt = _deplier(t, defs)
+    return nt, _reste_depliable(nt, defs)
+
+
+def _tete(t: str) -> str:
+    """Constructeur de tête d'un type normalisé : `∀`, `→`, `∧` ou le
+    premier identifiant (tête d'application)."""
+    t = _denuder(t)
+    if t.startswith("∀"):
+        return "∀"
+    prof = 0
+    for c in t:
+        if c in "([{":
+            prof += 1
+        elif c in ")]}":
+            prof = max(0, prof - 1)
+        elif prof == 0 and c in "→∧":
+            return c
+    m = re.match(r"^([\w']+)", t)
+    return m.group(1) if m else t[:20]
+
+
+def _mismatch_irreconciliable(h1: str, h2: str) -> bool:
+    """Deux têtes sont-elles prouvablement incompatibles ?
+    Conservateur : la paire (∀, →) et toute paire de coercition connue
+    rendent INCONNU, jamais IMPOSSIBLE."""
+    if h1 == h2:
+        return False
+    if {h1, h2} <= {"∀", "→"}:
+        return False
+    if frozenset({h1, h2}) in _PAIRES_COERCITION:
+        return False
+    return True
+
+
+def _atteignabilite(type_trou: str, type_terme: str, defs: dict) -> tuple:
+    """Classifie (trou, terme) en ATTEIGNABLE / IMPOSSIBLE / INCONNU.
+
+    - ATTEIGNABLE : équivalence après dépliage (± permutation des lieurs).
+    - IMPOSSIBLE : dépliage complet des deux côtés, têtes structurellement
+      incompatibles. Prétention falsifiable : Lean doit RÉFUTER le câblage.
+    - INCONNU : borne atteinte avec du dépliage restant, ou mismatch non
+      décisif. Aveu d'ignorance, jamais un IMPOSSIBLE déguisé.
+    """
+    if _types_equivalents(type_trou, type_terme, defs):
+        return "ATTEIGNABLE", "types équivalents après dépliage"
+    # permutation des lieurs (miroir de _synthetiser_trou)
+    ls, cs = _analyse_forall(_deplier(type_trou, defs))
+    lt, ct = _analyse_forall(_deplier(type_terme, defs))
+    if ls and lt and _types_equivalents(cs, ct, defs):
+        return "ATTEIGNABLE", "équivalents à permutation des lieurs près"
+    ntrou, reste_trou = _deplier_temoin(type_trou, defs)
+    nterme, reste_terme = _deplier_temoin(type_terme, defs)
+    if reste_trou or reste_terme:
+        return "INCONNU", "borne de dépliage atteinte, définitions restantes"
+    htrou, hterme = _tete(ntrou), _tete(nterme)
+    if _mismatch_irreconciliable(htrou, hterme):
+        return ("IMPOSSIBLE",
+                f"têtes incompatibles après dépliage complet : "
+                f"{htrou} vs {hterme}")
+    return "INCONNU", "pas d'équivalence, mismatch non décisif"
+
+
+def classifier_directions_trou(type_cible: str, contexte: list,
+                               structures: dict, defs: dict,
+                               subst: dict) -> tuple:
+    """Pour un trou, classifie chaque terme candidat en trois zones.
+
+    Rend (directions, comptes) ; directions = [(terme, zone, raison)].
+    Mesure seulement — ne change pas le comportement de la synthèse.
+    """
+    cible = _substituer(type_cible, subst)
+    etendus = _termes_etendus(contexte, structures, subst)
+    directions, vus = [], set()
+
+    def ajouter(terme, ttype):
+        if terme in vus:
+            return
+        vus.add(terme)
+        zone, raison = _atteignabilite(cible, _substituer(ttype, subst), defs)
+        directions.append((terme, zone, raison))
+
+    for tnom, ttype in etendus:
+        ajouter(tnom, ttype)
+    # projections de conjonctions (miroir de _synthetiser_trou, chemins imbriqués)
+    for tnom, ttype in etendus:
+        mv = re.match(r"^(\w+)\s*(.*)$", _normaliser_type(ttype))
+        if not mv or mv.group(1) not in defs:
+            continue
+        parts = _couper_conjonction(_deplier(defs[mv.group(1)], defs))
+        if len(parts) < 2:
+            continue
+        for idx, part in enumerate(parts, start=1):
+            proj = f"{tnom}{_chemin_projection_conjonction(idx, len(parts))}"
+            ajouter(proj, _substituer(part, subst))
+    comptes = {"ATTEIGNABLE": 0, "IMPOSSIBLE": 0, "INCONNU": 0}
+    for _, zone, _ in directions:
+        comptes[zone] += 1
+    return directions, comptes
+
+
+def _subst_sequentielle(d: DeclarationProuvee, noms_sorry: set,
+                        lieurs_sorry: list, structures: dict,
+                        defs: dict):
+    """Génère (nom_trou, type_trou, subst) trou par trou, avec avancement du
+    subst exactement comme `_squelette_synthese` (les trous déjà remplis
+    alimentent la substitution des suivants).
+
+    Nécessaire à la solidité du classifieur : un trou dont le type mentionne
+    un trou précédent (ex. `hm : u 0 = 0`) ne peut être classé qu'après
+    substitution — sinon un faux IMPOSSIBLE (ex. `s.mom` rejeté pour `hm`
+    avant que `u` vaille `s.u`, alors que Lean l'accepterait après).
+    Ne pas modifier l'un sans l'autre (référence croisée)."""
+    subst: dict = {}
+    for nom, typ in _lieurs_types(d):
+        if nom in noms_sorry:
+            subst[nom] = nom
+            continue
+        yield nom, typ, dict(subst)
+        terme, _ = _synthetiser_trou(typ, lieurs_sorry, structures,
+                                     defs, subst)
+        if terme is not None:
+            subst[nom] = terme
+
+
+def _directions_par_trou(d: DeclarationProuvee, noms_sorry: set,
+                         lieurs_sorry: list, structures: dict,
+                         defs: dict):
+    """Génère (nom_trou, type_substitué, directions) trou par trou.
+    Moteur unique de la mesure — `mesurer_directions` et
+    `directions_impossibles` sont deux lectures du même flux."""
+    for nom, typ, subst in _subst_sequentielle(d, noms_sorry, lieurs_sorry,
+                                              structures, defs):
+        cible = _substituer(typ, subst)
+        directions, _ = classifier_directions_trou(typ, lieurs_sorry,
+                                                   structures, defs, subst)
+        yield nom, cible, directions
+
+
+def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
+                           dossier: str) -> tuple:
+    """(mesure, impossibles) en une seule passe.
+    mesure = {"trous": {nom: comptes}, "directions_ouvertes": n} ;
+    impossibles = [{"trou", "type_trou", "terme", "raison"}] pour la
+    validation de solidité (chacune doit être RÉFUTÉE par Lean)."""
+    noms_sorry = ctx["noms_sorry"]
+    lieurs_sorry = [(n, t) for n, t in _lieurs_types(ctx["ent_sorry"])] \
+        if ctx.get("ent_sorry") else []
+    structures = _structures_corpus(dossier)
+    defs = _defs_corps(dossier)
+    trous, ouvertes, impossibles = {}, 0, []
+    for nom, cible, directions in _directions_par_trou(
+            d, noms_sorry, lieurs_sorry, structures, defs):
+        comptes = {"ATTEIGNABLE": 0, "IMPOSSIBLE": 0, "INCONNU": 0}
+        for terme, zone, raison in directions:
+            comptes[zone] += 1
+            if zone == "IMPOSSIBLE":
+                impossibles.append({"trou": nom, "type_trou": cible,
+                                    "terme": terme, "raison": raison})
+        trous[nom] = comptes
+        ouvertes += comptes["ATTEIGNABLE"] + comptes["INCONNU"]
+    return {"trous": trous, "directions_ouvertes": ouvertes}, impossibles
+
+
+def mesurer_directions(d: DeclarationProuvee, ctx: dict,
+                       dossier: str) -> dict:
+    """Mesure des directions par trou pour un candidat : l'unité.
+
+    `directions_ouvertes` = ATTEIGNABLE + INCONNU, compté exactement sur
+    l'ensemble des termes candidats, avec le subst séquentiel de la synthèse.
+    Mesure exacte de l'état du classifieur — 100 % fiable en tant que mesure.
+    """
+    mesure, _ = _mesure_et_impossibles(d, ctx, dossier)
+    return mesure
+
+
+def directions_impossibles(d: DeclarationProuvee, ctx: dict,
+                           dossier: str) -> list:
+    """Directions prédites IMPOSSIBLE : [{"trou", "type_trou", "terme",
+    "raison"}]. Pour la validation de solidité — chacune doit être RÉFUTÉE
+    par Lean (sinon violation → durcissement)."""
+    _, impossibles = _mesure_et_impossibles(d, ctx, dossier)
+    return impossibles
+
+
 def _squelette_synthese(d: DeclarationProuvee, ctx: dict, dossier: str) -> str:
     """Squelette avec synthèse contrôlée : nom du sorry, sinon synthèse
     typée, sinon `?_` honnête. Les lieurs déjà remplis alimentent la
-    substitution pour les trous suivants (u → sol.u avant hmom)."""
+    substitution pour les trous suivants (u → sol.u avant hmom).
+    Ne pas modifier l'avancement du subst sans `_subst_sequentielle`
+    (référence croisée — la mesure des directions en dépend)."""
     noms_sorry = ctx["noms_sorry"]
     lieurs_sorry = [(n, t) for n, t in _lieurs_types(ctx["ent_sorry"])] \
         if ctx.get("ent_sorry") else []
@@ -979,11 +1280,17 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
         # squelette : lieurs du sorry par nom, sinon synthèse contrôlée
         # de structures, sinon trou `?_` honnête
         squelette = _squelette_synthese(d, ctx, dossier)
+        # mesure des directions (trois zones) — annotation seulement :
+        # aucun élagage avant validation de solidité par Lean (discipline
+        # docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md, étape 4).
+        mesure, impossibles = _mesure_et_impossibles(d, ctx, dossier)
         bruts.append(Candidat(
             sorry=sorry, module_source=d.module, fichier_source=d.fichier,
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
             conclusion_source=d.conclusion, squelette=squelette,
-            score=score, raisons=raisons))
+            score=score, raisons=raisons, directions=mesure,
+            impossibles=impossibles))
+    choix = bruts
     choix = bruts
     return {
         "statut": "TROUVÉ",
@@ -995,7 +1302,8 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
             {"declaration": c.declaration, "module": c.module_source,
              "fichier": c.fichier_source, "ligne": c.ligne,
              "conclusion": c.conclusion_source, "squelette": c.squelette,
-             "score": c.score, "raisons": c.raisons}
+             "score": c.score, "raisons": c.raisons,
+             "directions": c.directions, "impossibles": c.impossibles}
             for c in choix
         ],
     }
@@ -1698,6 +2006,55 @@ def fichier_verification(sorry: str, candidat: dict, module_sorry: str,
     return "\n".join(lignes)
 
 
+def fichier_validation_solidite(sorry: str, module_sorry: str,
+                                groupes: list, type_trou: str, terme: str,
+                                opens_sorry: list | None = None,
+                                raison: str = "") -> str:
+    """Test minimal de solidité : une direction prédite IMPOSSIBLE.
+
+    `example <lieurs du sorry> : <type_trou> := <terme>` doit être RÉFUTÉ
+    par Lean (type mismatch). Si PROUVÉ : violation de solidité du
+    classifieur → durcissement immédiat
+    (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md).
+    """
+    lignes = [
+        "-- Validation de solidité — atteignabilité typée à trois zones.",
+        f"-- Sorry visé : {sorry} (module {module_sorry}).",
+        f"-- Direction prédite IMPOSSIBLE : `{terme}`",
+        f"--   pour le trou de type : {type_trou}",
+        f"-- Raison du classifieur : {raison}",
+        "-- Attendu : RÉFUTÉ (type mismatch). PROUVÉ = violation de solidité.",
+        "",
+        f"import {module_sorry}",
+    ]
+    # B3 : rejouer les `open` du fichier du sorry (même raison que le
+    # fichier de vérification — sinon des identifiants manquent).
+    for o in (opens_sorry or []):
+        lignes.append(o)
+    lignes += [
+        "",
+        f"example {' '.join(groupes)} : {type_trou} := {terme}",
+        "",
+    ]
+    return "\n".join(lignes)
+
+
+def interpreter_solidite(v: dict) -> str:
+    """CONFIRMÉ / VIOLATION / INCONCLUSIF pour une direction IMPOSSIBLE.
+
+    - PROUVÉ → VIOLATION : le classifieur avait tort, Lean accepte —
+      durcissement immédiat (et on a trouvé un câblage qui marche).
+    - RÉFUTÉ avec type mismatch → CONFIRMÉ : la prédiction tient.
+    - le reste → INCONCLUSIF : le test lui-même est à inspecter
+      (identifiant inconnu, univers, timeout), pas une violation.
+    """
+    if v["verdict"] == "PROUVÉ":
+        return "VIOLATION"
+    if v["verdict"] == "RÉFUTÉ" and "mismatch" in v["diagnostic"].lower():
+        return "CONFIRMÉ"
+    return "INCONCLUSIF"
+
+
 def verdict_lean(chemin_fichier: str, dossier_lean: str,
                  timeout_s: int = 600) -> dict:
     """Fait trancher Lean : PROUVÉ / RÉFUTÉ / INDÉCIDÉ. Mécanique, sans appel."""
@@ -1738,4 +2095,20 @@ def rendre_console(res: dict) -> str:
         if c.get("verdict"):
             lignes.append(
                 f"      verdict Lean : {c['verdict']}")
+        d = c.get("directions") or {}
+        if d.get("trous"):
+            lignes.append(
+                f"      directions : {d['directions_ouvertes']} ouvertes "
+                f"(ATTEIGNABLE + INCONNU) sur {len(d['trous'])} trous, "
+                f"{len(c.get('impossibles', []))} prédites IMPOSSIBLE")
+    v = res.get("validation_solidite")
+    if v:
+        lignes.append(
+            f"  Validation de solidité : {v['confirmes']} CONFIRMÉ, "
+            f"{len(v['violations'])} VIOLATION, "
+            f"{len(v['inconclusifs'])} INCONCLUSIF")
+        for f in v["violations"]:
+            lignes.append(
+                f"    ⚠️ VIOLATION : {f['trou']} ← {f['terme'][:60]} "
+                f"({f['verdict']})")
     return "\n".join(lignes)

@@ -240,6 +240,14 @@ Exemples :
                                           "l'inégalité de budget C(P) ≤ B(S) (fragment D, "
                                           "INDÉCIDÉ a priori sans build Lean si aucun chemin "
                                           "admissible)")
+    chemins_verifiables.add_argument("--valider-solidite", type=int, default=0,
+                                     metavar="K",
+                                     help="Validation de solidité du classifieur à trois zones : "
+                                          "soumet à Lean K directions prédites IMPOSSIBLE par "
+                                          "candidat (échantillon stratifié par trou, test minimal "
+                                          "`example : T := t`). Attendu : RÉFUTÉ partout ; "
+                                          "PROUVÉ = violation de solidité → durcissement. "
+                                          "(défaut : 0, désactivé)")
 
     ou_aller = subparsers.add_parser("ou-aller",
                                      help="Où aller : liste d'attention ordonnée "
@@ -871,7 +879,9 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         analyser_entete,
         candidats_cablage,
         extraire_entete,
+        fichier_validation_solidite,
         fichier_verification,
+        interpreter_solidite,
         realiser_chemins,
         rendre_chemins,
         rendre_console,
@@ -947,6 +957,64 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
             c["diagnostic"] = v["diagnostic"]
             if garder:
                 c["fichier_verification"] = chemin_v
+    n_solidite = getattr(args, "valider_solidite", 0) or 0
+    if n_solidite > 0:
+        # Validation de solidité : chaque direction prédite IMPOSSIBLE est
+        # soumise à Lean via un test minimal. Protocole falsifiable
+        # (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md) : PROUVÉ = violation.
+        timeout = getattr(args, "timeout", 600)
+        garder = getattr(args, "garder", False)
+        groupes, _noms, _conclusion = analyser_entete(
+            res["enonce_sorry"], args.sorry)
+        bilan = {"confirmes": 0, "violations": [], "inconclusifs": []}
+        for i, c in enumerate(res["candidats"]):
+            # échantillon stratifié : tourniquet sur les trous pour couvrir
+            # des décisions différentes du classifieur, pas N fois le même.
+            par_trou = {}
+            for p in c.get("impossibles", []):
+                par_trou.setdefault(p["trou"], []).append(p)
+            trous = list(par_trou)
+            echantillon, k = [], 0
+            while len(echantillon) < n_solidite and trous:
+                t = trous[k % len(trous)]
+                if par_trou[t]:
+                    echantillon.append(par_trou[t].pop(0))
+                elif all(not par_trou[u] for u in trous):
+                    break
+                k += 1
+            for j, p in enumerate(echantillon):
+                contenu = fichier_validation_solidite(
+                    args.sorry, res["module_sorry"], groupes,
+                    p["type_trou"], p["terme"],
+                    opens_sorry=res.get("opens_sorry"), raison=p["raison"])
+                chemin_v = os.path.join(
+                    dossier, f"Solidite_{args.sorry}_{i}_{j}.lean")
+                try:
+                    with open(chemin_v, "w", encoding="utf-8") as fh:
+                        fh.write(contenu)
+                    v = verdict_lean(chemin_v, dossier, timeout_s=timeout)
+                finally:
+                    if not garder:
+                        try:
+                            os.remove(chemin_v)
+                        except OSError:
+                            pass
+                statut = interpreter_solidite(v)
+                fiche = {"candidat": c["declaration"], "trou": p["trou"],
+                         "terme": p["terme"], "type_trou": p["type_trou"],
+                         "raison": p["raison"], "verdict": v["verdict"],
+                         "statut": statut}
+                if garder:
+                    fiche["fichier"] = chemin_v
+                if statut == "CONFIRMÉ":
+                    bilan["confirmes"] += 1
+                elif statut == "VIOLATION":
+                    fiche["diagnostic"] = v["diagnostic"]
+                    bilan["violations"].append(fiche)
+                else:
+                    fiche["diagnostic"] = v["diagnostic"]
+                    bilan["inconclusifs"].append(fiche)
+        res["validation_solidite"] = bilan
     if getattr(args, "format", "console") == "json":
         print(json.dumps(res, indent=2, ensure_ascii=False))
     else:
