@@ -42,11 +42,13 @@ from __future__ import annotations
 import bisect
 import heapq
 import itertools
+import json
 import math
 import os
 import re
 import statistics
 import subprocess
+import time
 from dataclasses import dataclass, field
 
 
@@ -88,12 +90,16 @@ class Candidat:
     squelette: str
     score: float
     raisons: list = field(default_factory=list)
-    #: Mesure des directions par trou (trois zones ATTEIGNABLE / IMPOSSIBLE /
-    #: INCONNU) — annotation seulement, aucun élagage avant validation de
-    #: solidité par Lean (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md).
+    #: Mesure des directions par trou (quatre zones ATTEIGNABLE /
+    #: CANDIDAT_IMPOSSIBLE / INCONNU / IMPOSSIBLE_VALIDÉ) —
+    #: docs/DISCIPLINE_ELAGAGE_REEL.md. Les IMPOSSIBLE_VALIDÉ (registre
+    #: Lean) sont élaguées des directions ouvertes ; seuls les
+    #: CANDIDAT_IMPOSSIBLE non validés restent à falsifier.
     directions: dict = field(default_factory=dict)
-    #: Directions prédites IMPOSSIBLE : [{"trou", "type_trou", "terme",
-    #: "raison"}] — pour la validation de solidité (`--valider-solidite`).
+    #: Directions CANDIDAT_IMPOSSIBLE non validées : [{"trou", "type_trou",
+    #: "terme", "raison"}] — pour la validation de solidité
+    #: (`--valider-solidite`). Chacune doit être RÉFUTÉE par Lean pour
+    #: devenir IMPOSSIBLE_VALIDÉ (registre).
     impossibles: list = field(default_factory=list)
 
 
@@ -1017,8 +1023,8 @@ _PAIRES_COERCITION = frozenset({
 })
 """Paires (non ordonnées) de têtes de types entre lesquelles Lean peut
 insérer une coercition automatique : un mismatch sur une telle paire n'est
-jamais déclaré IMPOSSIBLE (conservateur — INCONNU n'est jamais un
-IMPOSSIBLE déguisé). Toute paire manquante sera attrapée par la validation
+jamais déclaré CANDIDAT_IMPOSSIBLE (conservateur — INCONNU n'est jamais un
+CANDIDAT_IMPOSSIBLE déguisé). Toute paire manquante sera attrapée par la validation
 de solidité (Lean tranche) → durcissement."""
 
 
@@ -1043,7 +1049,7 @@ def _reste_depliable(t: str, defs: dict) -> bool:
 def _deplier_temoin(t: str, defs: dict) -> tuple:
     """Dépliage avec témoin d'exhaustivité : (type_normalisé, reste).
     `reste` = True ssi la borne a stoppé le dépliage alors qu'il restait
-    des définitions dépliables → INCONNU honnête, jamais IMPOSSIBLE."""
+    des définitions dépliables → INCONNU honnête, jamais CANDIDAT_IMPOSSIBLE."""
     nt = _deplier(t, defs)
     return nt, _reste_depliable(nt, defs)
 
@@ -1069,7 +1075,7 @@ def _tete(t: str) -> str:
 def _mismatch_irreconciliable(h1: str, h2: str) -> bool:
     """Deux têtes sont-elles prouvablement incompatibles ?
     Conservateur : la paire (∀, →) et toute paire de coercition connue
-    rendent INCONNU, jamais IMPOSSIBLE."""
+    rendent INCONNU, jamais CANDIDAT_IMPOSSIBLE."""
     if h1 == h2:
         return False
     if {h1, h2} <= {"∀", "→"}:
@@ -1080,13 +1086,15 @@ def _mismatch_irreconciliable(h1: str, h2: str) -> bool:
 
 
 def _atteignabilite(type_trou: str, type_terme: str, defs: dict) -> tuple:
-    """Classifie (trou, terme) en ATTEIGNABLE / IMPOSSIBLE / INCONNU.
+    """Classifie (trou, terme) en ATTEIGNABLE / CANDIDAT_IMPOSSIBLE / INCONNU.
 
     - ATTEIGNABLE : équivalence après dépliage (± permutation des lieurs).
-    - IMPOSSIBLE : dépliage complet des deux côtés, têtes structurellement
-      incompatibles. Prétention falsifiable : Lean doit RÉFUTER le câblage.
+    - CANDIDAT_IMPOSSIBLE : dépliage complet des deux côtés, têtes
+      structurellement incompatibles. Prétention falsifiable : Lean doit
+      RÉFUTER le câblage. Seul Lean promeut en IMPOSSIBLE_VALIDÉ
+      (docs/DISCIPLINE_ELAGAGE_REEL.md) — jamais une analyse statique.
     - INCONNU : borne atteinte avec du dépliage restant, ou mismatch non
-      décisif. Aveu d'ignorance, jamais un IMPOSSIBLE déguisé.
+      décisif. Aveu d'ignorance, jamais un CANDIDAT_IMPOSSIBLE déguisé.
     """
     if _types_equivalents(type_trou, type_terme, defs):
         return "ATTEIGNABLE", "types équivalents après dépliage"
@@ -1101,10 +1109,75 @@ def _atteignabilite(type_trou: str, type_terme: str, defs: dict) -> tuple:
         return "INCONNU", "borne de dépliage atteinte, définitions restantes"
     htrou, hterme = _tete(ntrou), _tete(nterme)
     if _mismatch_irreconciliable(htrou, hterme):
-        return ("IMPOSSIBLE",
+        return ("CANDIDAT_IMPOSSIBLE",
                 f"têtes incompatibles après dépliage complet : "
                 f"{htrou} vs {hterme}")
     return "INCONNU", "pas d'équivalence, mismatch non décisif"
+
+
+def _chemin_registre_impossibles() -> str:
+    """Fichier du registre des impossibilités validées par Lean.
+
+    Hors dépôt : c'est un état local de falsification, pas du code.
+    Règle d'airain (docs/DISCIPLINE_ELAGAGE_REEL.md) : seul Lean promeut
+    CANDIDAT_IMPOSSIBLE en IMPOSSIBLE_VALIDÉ, via --valider-solidite.
+    """
+    return os.path.expanduser("~/.phi/impossibles_valides.json")
+
+
+def lire_impossibles_valides() -> dict:
+    """Registre {(sorry, trou, terme): fiche} des IMPOSSIBLE_VALIDÉ.
+
+    Fiche = {"type_trou", "raison", "fichier_verification", "date"}.
+    Absent ou illisible → registre vide (jamais d'exception : un registre
+    perdu n'est qu'une occasion manquée d'élaguer, pas une erreur).
+    """
+    chemin = _chemin_registre_impossibles()
+    try:
+        with open(chemin, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _cle_registre(sorry: str, trou: str, terme: str) -> str:
+    return f"{sorry}\x00{trou}\x00{terme}"
+
+
+def est_impossible_valide(sorry: str, trou: str, terme: str,
+                          registre: dict | None = None) -> bool:
+    """Cette direction a-t-elle été RÉFUTÉE par Lean ?"""
+    reg = registre if registre is not None else lire_impossibles_valides()
+    return _cle_registre(sorry, trou, terme) in reg
+
+
+def inscrire_impossible_valide(sorry: str, trou: str, type_trou: str,
+                               terme: str, raison: str,
+                               fichier_verification: str) -> None:
+    """Inscrit une direction CONFIRMÉE par Lean au registre.
+
+    Appelé uniquement depuis --valider-solidite sur statut CONFIRMÉ
+    (RÉFUTÉ par Lean). Le registre est append-only par conception :
+    on ne supprime jamais sans ordre explicite.
+    """
+    chemin = _chemin_registre_impossibles()
+    try:
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+    except OSError:
+        pass
+    reg = lire_impossibles_valides()
+    reg[_cle_registre(sorry, trou, terme)] = {
+        "type_trou": type_trou,
+        "raison": raison,
+        "fichier_verification": fichier_verification,
+        "date": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    try:
+        with open(chemin, "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=2, ensure_ascii=False)
+    except OSError:
+        pass
 
 
 def classifier_directions_trou(type_cible: str, contexte: list,
@@ -1139,7 +1212,7 @@ def classifier_directions_trou(type_cible: str, contexte: list,
         for idx, part in enumerate(parts, start=1):
             proj = f"{tnom}{_chemin_projection_conjonction(idx, len(parts))}"
             ajouter(proj, _substituer(part, subst))
-    comptes = {"ATTEIGNABLE": 0, "IMPOSSIBLE": 0, "INCONNU": 0}
+    comptes = {"ATTEIGNABLE": 0, "CANDIDAT_IMPOSSIBLE": 0, "INCONNU": 0}
     for _, zone, _ in directions:
         comptes[zone] += 1
     return directions, comptes
@@ -1154,7 +1227,7 @@ def _subst_sequentielle(d: DeclarationProuvee, noms_sorry: set,
 
     Nécessaire à la solidité du classifieur : un trou dont le type mentionne
     un trou précédent (ex. `hm : u 0 = 0`) ne peut être classé qu'après
-    substitution — sinon un faux IMPOSSIBLE (ex. `s.mom` rejeté pour `hm`
+    substitution — sinon un faux CANDIDAT_IMPOSSIBLE (ex. `s.mom` rejeté pour `hm`
     avant que `u` vaille `s.u`, alors que Lean l'accepterait après).
     Ne pas modifier l'un sans l'autre (référence croisée)."""
     subst: dict = {}
@@ -1184,48 +1257,64 @@ def _directions_par_trou(d: DeclarationProuvee, noms_sorry: set,
 
 
 def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
-                           dossier: str) -> tuple:
+                           dossier: str, sorry: str = "") -> tuple:
     """(mesure, impossibles) en une seule passe.
-    mesure = {"trous": {nom: comptes}, "directions_ouvertes": n} ;
+
+    mesure = {"trous": {nom: comptes_4_zones}, "directions_ouvertes": n} ;
     impossibles = [{"trou", "type_trou", "terme", "raison"}] pour la
-    validation de solidité (chacune doit être RÉFUTÉE par Lean)."""
+    validation de solidité (chacune doit être RÉFUTÉE par Lean).
+
+    Élagage réel (docs/DISCIPLINE_ELAGAGE_REEL.md) : toute direction
+    CANDIDAT_IMPOSSIBLE inscrite au registre (RÉFUTÉE par Lean) devient
+    IMPOSSIBLE_VALIDÉ — elle est retirée des directions ouvertes et de
+    la liste des impossibles à falsifier. Seul Lean promeut.
+    """
     noms_sorry = ctx["noms_sorry"]
     lieurs_sorry = [(n, t) for n, t in _lieurs_types(ctx["ent_sorry"])] \
         if ctx.get("ent_sorry") else []
     structures = _structures_corpus(dossier)
     defs = _defs_corps(dossier)
+    registre = lire_impossibles_valides() if sorry else {}
     trous, ouvertes, impossibles = {}, 0, []
     for nom, cible, directions in _directions_par_trou(
             d, noms_sorry, lieurs_sorry, structures, defs):
-        comptes = {"ATTEIGNABLE": 0, "IMPOSSIBLE": 0, "INCONNU": 0}
+        comptes = {"ATTEIGNABLE": 0, "CANDIDAT_IMPOSSIBLE": 0,
+                   "INCONNU": 0, "IMPOSSIBLE_VALIDÉ": 0}
         for terme, zone, raison in directions:
+            if (zone == "CANDIDAT_IMPOSSIBLE" and sorry
+                    and est_impossible_valide(sorry, nom, terme, registre)):
+                zone = "IMPOSSIBLE_VALIDÉ"
             comptes[zone] += 1
-            if zone == "IMPOSSIBLE":
+            if zone == "CANDIDAT_IMPOSSIBLE":
                 impossibles.append({"trou": nom, "type_trou": cible,
                                     "terme": terme, "raison": raison})
         trous[nom] = comptes
-        ouvertes += comptes["ATTEIGNABLE"] + comptes["INCONNU"]
+        ouvertes += (comptes["ATTEIGNABLE"] + comptes["INCONNU"]
+                     + comptes["CANDIDAT_IMPOSSIBLE"])
     return {"trous": trous, "directions_ouvertes": ouvertes}, impossibles
 
 
 def mesurer_directions(d: DeclarationProuvee, ctx: dict,
-                       dossier: str) -> dict:
+                       dossier: str, sorry: str = "") -> dict:
     """Mesure des directions par trou pour un candidat : l'unité.
 
-    `directions_ouvertes` = ATTEIGNABLE + INCONNU, compté exactement sur
-    l'ensemble des termes candidats, avec le subst séquentiel de la synthèse.
-    Mesure exacte de l'état du classifieur — 100 % fiable en tant que mesure.
+    `directions_ouvertes` = ATTEIGNABLE + INCONNU + CANDIDAT_IMPOSSIBLE,
+    compté exactement sur l'ensemble des termes candidats, avec le subst
+    séquentiel de la synthèse. Les IMPOSSIBLE_VALIDÉ (registre Lean) sont
+    élagués : ni comptés ni reproposés. Mesure exacte de l'état du
+    classifieur — 100 % fiable en tant que mesure.
     """
-    mesure, _ = _mesure_et_impossibles(d, ctx, dossier)
+    mesure, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return mesure
 
 
 def directions_impossibles(d: DeclarationProuvee, ctx: dict,
-                           dossier: str) -> list:
-    """Directions prédites IMPOSSIBLE : [{"trou", "type_trou", "terme",
-    "raison"}]. Pour la validation de solidité — chacune doit être RÉFUTÉE
-    par Lean (sinon violation → durcissement)."""
-    _, impossibles = _mesure_et_impossibles(d, ctx, dossier)
+                           dossier: str, sorry: str = "") -> list:
+    """Directions CANDIDAT_IMPOSSIBLE non encore validées : [{"trou",
+    "type_trou", "terme", "raison"}]. Pour la validation de solidité —
+    chacune doit être RÉFUTÉE par Lean (sinon violation → durcissement).
+    Les IMPOSSIBLE_VALIDÉ du registre sont exclues (déjà tranchées)."""
+    _, impossibles = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return impossibles
 
 
@@ -1280,10 +1369,10 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
         # squelette : lieurs du sorry par nom, sinon synthèse contrôlée
         # de structures, sinon trou `?_` honnête
         squelette = _squelette_synthese(d, ctx, dossier)
-        # mesure des directions (trois zones) — annotation seulement :
-        # aucun élagage avant validation de solidité par Lean (discipline
-        # docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md, étape 4).
-        mesure, impossibles = _mesure_et_impossibles(d, ctx, dossier)
+        # mesure des directions (quatre zones) + élagage réel :
+        # les IMPOSSIBLE_VALIDÉ du registre Lean sont retirées des
+        # directions ouvertes (docs/DISCIPLINE_ELAGAGE_REEL.md).
+        mesure, impossibles = _mesure_et_impossibles(d, ctx, dossier, sorry)
         bruts.append(Candidat(
             sorry=sorry, module_source=d.module, fichier_source=d.fichier,
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
@@ -2010,7 +2099,7 @@ def fichier_validation_solidite(sorry: str, module_sorry: str,
                                 groupes: list, type_trou: str, terme: str,
                                 opens_sorry: list | None = None,
                                 raison: str = "") -> str:
-    """Test minimal de solidité : une direction prédite IMPOSSIBLE.
+    """Test minimal de solidité : une direction CANDIDAT_IMPOSSIBLE.
 
     `example <lieurs du sorry> : <type_trou> := <terme>` doit être RÉFUTÉ
     par Lean (type mismatch). Si PROUVÉ : violation de solidité du
@@ -2020,7 +2109,7 @@ def fichier_validation_solidite(sorry: str, module_sorry: str,
     lignes = [
         "-- Validation de solidité — atteignabilité typée à trois zones.",
         f"-- Sorry visé : {sorry} (module {module_sorry}).",
-        f"-- Direction prédite IMPOSSIBLE : `{terme}`",
+        f"-- Direction CANDIDAT_IMPOSSIBLE : `{terme}`",
         f"--   pour le trou de type : {type_trou}",
         f"-- Raison du classifieur : {raison}",
         "-- Attendu : RÉFUTÉ (type mismatch). PROUVÉ = violation de solidité.",
@@ -2040,7 +2129,7 @@ def fichier_validation_solidite(sorry: str, module_sorry: str,
 
 
 def interpreter_solidite(v: dict) -> str:
-    """CONFIRMÉ / VIOLATION / INCONCLUSIF pour une direction IMPOSSIBLE.
+    """CONFIRMÉ / VIOLATION / INCONCLUSIF pour une direction CANDIDAT_IMPOSSIBLE.
 
     - PROUVÉ → VIOLATION : le classifieur avait tort, Lean accepte —
       durcissement immédiat (et on a trouvé un câblage qui marche).
@@ -2097,10 +2186,14 @@ def rendre_console(res: dict) -> str:
                 f"      verdict Lean : {c['verdict']}")
         d = c.get("directions") or {}
         if d.get("trous"):
+            valides = sum(t.get("IMPOSSIBLE_VALIDÉ", 0)
+                          for t in d["trous"].values())
             lignes.append(
                 f"      directions : {d['directions_ouvertes']} ouvertes "
-                f"(ATTEIGNABLE + INCONNU) sur {len(d['trous'])} trous, "
-                f"{len(c.get('impossibles', []))} prédites IMPOSSIBLE")
+                f"(ATTEIGNABLE + INCONNU + CANDIDAT_IMPOSSIBLE) sur "
+                f"{len(d['trous'])} trous, "
+                f"{len(c.get('impossibles', []))} CANDIDAT_IMPOSSIBLE, "
+                f"{valides} IMPOSSIBLE_VALIDÉ (élaguées)")
     v = res.get("validation_solidite")
     if v:
         lignes.append(
