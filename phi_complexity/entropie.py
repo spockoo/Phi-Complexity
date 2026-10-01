@@ -22,7 +22,8 @@ Ce module chiffre le resserrement en BITS :
 ║   OUVERT = zones CONDITIONNEL, NON-ATTAQUÉ et statuts bruts           ║
 ║            (là où le chemin peut encore se trouver) ;                 ║
 ║   FERMÉ  = zones RÉFUTÉ et DÉMONTRÉ                                   ║
-║            (mort définitif, ou déjà traversé : hors incertitude).     ║
+║            (terminé — question close par un statut typé,               ║
+║            ou déjà traversé : hors incertitude).                       ║
 ║   πᵢ = φ⁻¹/N_ouvert  si i ∈ OUVERT ; πᵢ = φ⁻²/N_fermé si i ∈ FERMÉ.    ║
 ║ Si une macro-classe est vide, sa masse est transférée à l'autre       ║
 ║ (le prior reste une distribution). Sur une partition binaire          ║
@@ -36,16 +37,16 @@ Ce module chiffre le resserrement en BITS :
 ║ le resserrement de l'ATTENTION DE L'INSTRUMENT — jamais la            ║
 ║ probabilité que (A) soit vrai. Une réfutation est déjà absolue        ║
 ║ mathématiquement ; l'entropie n'ajoute que la COMPARABILITÉ           ║
-║ (combien de masse d'attention chaque cadavre libère).                 ║
+║ (combien de masse d'attention chaque hypothèse terminée libère).                 ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 Signe de ΔH (documenté, pas un bug) :
   ΔH > 0 : la réfutation a élagué un chemin secondaire — l'attention se concentre.
-  ΔH < 0 : la réfutation a tué le favori — l'attention se disperse. Signal d'alarme,
+  ΔH < 0 : la réfutation a terminé le favori — l'attention se disperse. Signal d'alarme,
            pas une erreur : une observation surprenante augmente l'entropie, c'est
            le comportement standard (contre-exemple minimal dans la doc et les tests :
-           (0.9, 0.05, 0.05), tuer 0.9 → H : 0.569 → 1.000).
-  ΔH = 0 : masse nulle tuée, ou redistribution neutre.
+           (0.9, 0.05, 0.05), terminer 0.9 → H : 0.569 → 1.000).
+  ΔH = 0 : masse nulle terminée, ou redistribution neutre.
 
 PORTÉE DES BORNES (comme pour l'EFT bayésien) : les log₂ sont des flottants déjà
 arrondis quand l'EFT les reçoit ; la borne certifiée ne couvre que les SOMMATIONS
