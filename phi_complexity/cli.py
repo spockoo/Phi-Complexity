@@ -250,6 +250,23 @@ Exemples :
                                           "Tout CONFIRMÉ est inscrit au registre des "
                                           "IMPOSSIBLE_VALIDÉ (élagage réel). "
                                           "(défaut : 0, désactivé)")
+    chemins_verifiables.add_argument("--encercler", type=int, default=0,
+                                     metavar="K",
+                                     help="Encerclement des directions INCONNU : "
+                                          "sonde chaque direction sous au plus K angles "
+                                          "Lean (dépliage profond, coercition explicite, "
+                                          "sous-termes) sans jamais la fermer au premier "
+                                          "contact. Statuts typés du dossier : ENCERCLE "
+                                          "(Lean a tranché → registre), RESISTANT "
+                                          "(mécanisme sensible → escaladé), "
+                                          "ATTEIGNABLE_TROUVE (câblage prouvé → escaladé). "
+                                          "Borné par --max-encercles directions par "
+                                          "candidat (défaut : 0, désactivé)")
+    chemins_verifiables.add_argument("--max-encercles", type=int, default=4,
+                                     metavar="M",
+                                     help="Borne anti-explosion : au plus M directions "
+                                          "INCONNU encerclées par candidat (échantillon "
+                                          "stratifié par trou, défaut : 4)")
 
     ou_aller = subparsers.add_parser("ou-aller",
                                      help="Où aller : liste d'attention ordonnée "
@@ -878,9 +895,11 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
     """
     import json
     from .chemins_verifiables import (
+        _defs_corps,
         analyser_entete,
         candidats_cablage,
         empreinte_enonce,
+        encercler_direction,
         ErreurRegistre,
         extraire_entete,
         fichier_validation_solidite,
@@ -1052,6 +1071,74 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                     fiche["diagnostic"] = v["diagnostic"]
                     bilan["inconclusifs"].append(fiche)
         res["validation_solidite"] = bilan
+    n_encercler = getattr(args, "encercler", 0) or 0
+    if n_encercler > 0:
+        # Encerclement : chaque direction INCONNU est sondée sous
+        # plusieurs angles Lean, jamais fermée au premier contact
+        # (docs/ENCERCLEMENT.md). Budgets : K angles max par direction,
+        # M directions max par candidat (R4 : pas d'explosion
+        # combinatoire non guidée). Seul Lean promeut (ENCERCLE →
+        # registre) ; RESISTANT et ATTEIGNABLE_TROUVE sont escaladés.
+        timeout = getattr(args, "timeout", 600)
+        garder = getattr(args, "garder", False)
+        max_enc = getattr(args, "max_encercles", 4) or 0
+        defs = _defs_corps(dossier)
+        empreinte = empreinte_enonce(res["enonce_sorry"])
+        bilan_enc = {"encercles": 0, "resistants": [], "atteignables": [],
+                     "sans_angle": 0, "inscrits_registre": 0,
+                     "erreurs": []}
+        for i, c in enumerate(res["candidats"]):
+            # échantillon stratifié : tourniquet sur les trous (même
+            # discipline que --valider-solidite).
+            par_trou = {}
+            for p in c.get("inconnus", []):
+                par_trou.setdefault(p["trou"], []).append(p)
+            trous = list(par_trou)
+            echantillon, k = [], 0
+            while len(echantillon) < max_enc and trous:
+                t = trous[k % len(trous)]
+                if par_trou[t]:
+                    echantillon.append(par_trou[t].pop(0))
+                elif all(not par_trou[u] for u in trous):
+                    break
+                k += 1
+            for j, p in enumerate(echantillon):
+                try:
+                    fiche = encercler_direction(
+                        args.sorry, res["module_sorry"], c,
+                        res.get("contexte_sorry") or {}, p, defs,
+                        empreinte, dossier,
+                        opens_sorry=res.get("opens_sorry"),
+                        timeout_s=timeout, max_angles=n_encercler,
+                        garder=garder, index=(i, j))
+                except ErreurRegistre as e:
+                    bilan_enc["erreurs"].append(str(e))
+                    print(f"⚠️  {e}", file=sys.stderr)
+                    continue
+                except Exception as e:  # inattendu : visible, run sauvé
+                    bilan_enc["erreurs"].append(f"inattendu : {e!r}")
+                    print(f"⚠️  encerclement impossible (inattendu) : {e!r}",
+                          file=sys.stderr)
+                    continue
+                if fiche is None:
+                    bilan_enc["sans_angle"] += 1
+                    continue
+                bilan_enc["encercles"] += 1
+                if fiche["registre"] == "IMPOSSIBLE_VALIDÉ":
+                    bilan_enc["inscrits_registre"] += 1
+                elif fiche["registre"] and \
+                        fiche["registre"].startswith("ÉCHEC"):
+                    bilan_enc["erreurs"].append(fiche["registre"])
+                resume = {"candidat": c["declaration"], "trou": p["trou"],
+                          "terme": p["terme"], "statut": fiche["statut"],
+                          "angles": [(a["angle"], a["statut_angle"])
+                                     for a in fiche["angles"]]}
+                if fiche["statut"] == "RESISTANT":
+                    bilan_enc["resistants"].append(resume)
+                elif fiche["statut"] == "ATTEIGNABLE_TROUVE":
+                    resume["diagnostic"] = "câblage PROUVÉ par Lean"
+                    bilan_enc["atteignables"].append(resume)
+        res["encerclement"] = bilan_enc
     if getattr(args, "format", "console") == "json":
         print(json.dumps(res, indent=2, ensure_ascii=False))
     else:
