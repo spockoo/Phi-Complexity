@@ -24,8 +24,18 @@ Règle d'airain : **seul Lean promeut `CANDIDAT_IMPOSSIBLE` en
 
 - Fichier : `~/.phi/impossibles_valides.json` (hors dépôt — c'est un
   état local de falsification, pas du code).
-- Clé : `(sorry, trou_normalisé, terme)` → `{raison, verdict_lean,
-  fichier, date}`.
+- Clé v2 : `v2 ␀ empreinte_énoncé[16] ␀ sorry ␀ candidat ␀ trou ␀
+  type_normalisé ␀ terme_normalisé` → fiche `{schema: 2, sorry,
+  candidat, trou, type_trou, terme, raison, fichier_verification,
+  empreinte_enonce, date}`.
+- L'empreinte (sha256 de l'énoncé normalisé du sorry) lie chaque
+  validation à SON énoncé : si le corpus évolue, les anciennes
+  validations ne sont plus réutilisées silencieusement.
+- Entrées v1 (sans empreinte) : comptées comme *legacy*, **non
+  réutilisées** pour l'élagage — à re-valider via `--valider-solidite`.
+- Corruption/illisibilité/non-inscriptibilité : `ErreurRegistre`
+  **visible** (bilan + stderr), jamais `{}` silencieux ; écriture
+  atomique (temporaire + `os.replace`).
 - `candidats_cablage` consulte le registre : toute direction
   `IMPOSSIBLE_VALIDÉ` est **retirée du pool** avant la mesure.
 - `directions_ouvertes = ATTEIGNABLE + INCONNU + CANDIDAT_IMPOSSIBLE`
