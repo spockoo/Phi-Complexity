@@ -5,7 +5,7 @@ revérifiable par commande : `python3 -m pytest tests/test_entropie.py -q`.
 
 Point d'honnêteté central (documenté dans ENTROPIE_SONDEB_20260930.md) :
 ΔH ≥ 0 sur réfutation est FAUX en général — contre-exemple (0.9, 0.05, 0.05),
-tuer le nœud à 0.9 → H : 0.569 → 1.000 (ΔH < 0 : la réfutation a tué le favori,
+terminer le nœud à 0.9 → H : 0.569 → 1.000 (ΔH < 0 : la réfutation a terminé le favori,
 l'attention se disperse — signal d'alarme, pas une erreur). Les tests ci-dessous
 vérifient le ΔH SIGNÉ et sa sémantique documentée, pas une positivité inventée.
 """
@@ -180,9 +180,9 @@ def test_delta_signe_semantique():
     evs, h_init, _, h_fin, _, _ = tracer_resserrement(
         noeuds, poids, [("tue `favori`", "test"), ("tue `secondaire`", "test")])
     assert evs[0].rattache and evs[1].rattache
-    assert evs[0].delta_h_bits < 0, "tuer le favori (0.9) DOIT disperser (ΔH<0)"
+    assert evs[0].delta_h_bits < 0, "terminer le favori (0.9) DOIT disperser (ΔH<0)"
     assert "alarme" in evs[0].note
-    # Après la mort du favori : (0.5, 0.5) ; tuer "secondaire" → (1.0) : H → 0.
+    # Après la fin du favori : (0.5, 0.5) ; terminer "secondaire" → (1.0) : H → 0.
     assert evs[1].delta_h_bits > 0, "élaguer ensuite concentre (ΔH>0)"
 
 
