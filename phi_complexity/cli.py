@@ -880,6 +880,8 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
     from .chemins_verifiables import (
         analyser_entete,
         candidats_cablage,
+        empreinte_enonce,
+        ErreurRegistre,
         extraire_entete,
         fichier_validation_solidite,
         fichier_verification,
@@ -970,7 +972,11 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         timeout = getattr(args, "timeout", 600)
         garder = getattr(args, "garder", False)
         bilan = {"confirmes": 0, "violations": [], "inconclusifs": [],
-                 "inscrits_registre": 0}
+                 "inscrits_registre": 0, "erreurs_registre": []}
+        # Empreinte de l'énoncé du sorry : les validations Lean sont
+        # liées à CET énoncé — si le corpus évolue, elles ne sont plus
+        # réutilisées silencieusement.
+        empreinte = empreinte_enonce(res["enonce_sorry"])
         for i, c in enumerate(res["candidats"]):
             # échantillon stratifié : tourniquet sur les trous pour couvrir
             # des décisions différentes du classifieur, pas N fois le même.
@@ -1018,16 +1024,27 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                 if statut == "CONFIRMÉ":
                     bilan["confirmes"] += 1
                     # Élagage réel : Lean a RÉFUTÉ → IMPOSSIBLE_VALIDÉ.
+                    # Échec d'inscription VISIBLE (jamais `except: pass`) :
+                    # le bilan et stderr le signalent, le run continue.
                     try:
                         inscrire_impossible_valide(
-                            args.sorry, p["trou"], p["type_trou"], p["terme"],
-                            p["raison"],
+                            args.sorry, c["declaration"], p["trou"],
+                            p["type_trou"], p["terme"], p["raison"],
                             chemin_v if garder else
-                            f"Solidite_{args.sorry}_{i}_{j}.lean")
+                            f"Solidite_{args.sorry}_{i}_{j}.lean",
+                            empreinte)
                         bilan["inscrits_registre"] += 1
                         fiche["registre"] = "IMPOSSIBLE_VALIDÉ"
-                    except Exception:
-                        pass
+                    except ErreurRegistre as e:
+                        bilan["erreurs_registre"].append(str(e))
+                        fiche["registre"] = f"ÉCHEC_INSCRIPTION : {e}"
+                        print(f"⚠️  {e}", file=sys.stderr)
+                    except Exception as e:  # inattendu : visible, run sauvé
+                        bilan["erreurs_registre"].append(f"inattendu : {e!r}")
+                        fiche["registre"] = \
+                            f"ÉCHEC_INSCRIPTION (inattendu) : {e!r}"
+                        print(f"⚠️  inscription impossible (inattendu) : {e!r}",
+                              file=sys.stderr)
                 elif statut == "VIOLATION":
                     fiche["diagnostic"] = v["diagnostic"]
                     bilan["violations"].append(fiche)

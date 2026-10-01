@@ -40,6 +40,7 @@ Portée honnête (v2, multi-lemmes — formulation validée 2026-10-01) :
 from __future__ import annotations
 
 import bisect
+import hashlib
 import heapq
 import itertools
 import json
@@ -1226,59 +1227,151 @@ def _chemin_registre_impossibles() -> str:
     return os.path.expanduser("~/.phi/impossibles_valides.json")
 
 
-def lire_impossibles_valides() -> dict:
-    """Registre {(sorry, trou, terme): fiche} des IMPOSSIBLE_VALIDÉ.
+class ErreurRegistre(Exception):
+    """Le registre est corrompu, illisible ou non inscriptible.
 
-    Fiche = {"type_trou", "raison", "fichier_verification", "date"}.
-    Absent ou illisible → registre vide (jamais d'exception : un registre
-    perdu n'est qu'une occasion manquée d'élaguer, pas une erreur).
+    Jamais silencieuse : un registre perdu n'est plus « une occasion
+    manquée d'élaguer », c'est un état à signaler visiblement — sinon
+    l'instrument prétend élaguer alors qu'il ne voit plus rien.
+    """
+
+
+#: Schéma des entrées du registre. v1 = clé (sorry, trou, terme) sans
+#: empreinte de corpus — non réutilisée pour l'élagage, seulement
+#: comptée comme « à re-valider ». v2 = clé complète ci-dessous.
+SCHEMA_REGISTRE = 2
+
+
+def _normaliser_texte(t: str) -> str:
+    """Forme canonique d'un type ou d'un terme pour la clé du registre :
+    espaces/retours normalisés — deux écritures du même objet partagent
+    la même clé, deux objets différents jamais."""
+    return re.sub(r"\s+", " ", t or "").strip()
+
+
+def empreinte_enonce(enonce: str) -> str:
+    """Empreinte stable (sha256 hex) de l'énoncé normalisé du sorry.
+
+    Si l'énoncé change (le corpus évolue), l'empreinte change : les
+    validations Lean antérieures ne s'appliquent plus silencieusement.
+    """
+    return hashlib.sha256(
+        _normaliser_texte(enonce).encode("utf-8")).hexdigest()
+
+
+def _cle_registre(sorry: str, candidat: str, trou: str, type_trou: str,
+                  terme: str, empreinte: str) -> str:
+    """Clé v2 : sorry + candidat + trou + type normalisé + terme
+    normalisé + empreinte de l'énoncé (16 premiers caractères hex).
+
+    Le préfixe « v2 » distingue structurellement les clés du schéma v1
+    (sans empreinte ni candidat), qui ne sont plus réutilisées.
+    """
+    return "\x00".join([
+        "v2", empreinte[:16], sorry, candidat, trou,
+        _normaliser_texte(type_trou), _normaliser_texte(terme),
+    ])
+
+
+def _est_cle_v2(cle: str) -> bool:
+    parts = cle.split("\x00")
+    return len(parts) == 7 and parts[0] == "v2"
+
+
+def entrees_legacy(registre: dict) -> int:
+    """Nombre d'entrées au schéma v1 : validées par Lean autrefois, mais
+    sans empreinte de corpus — non réutilisées pour l'élagage, à
+    re-valider explicitement via --valider-solidite."""
+    return sum(1 for k in registre if not _est_cle_v2(k))
+
+
+def lire_impossibles_valides() -> dict:
+    """Registre {clé v2: fiche} des IMPOSSIBLE_VALIDÉ.
+
+    Fiche = {"schema": 2, "sorry", "candidat", "trou", "type_trou",
+    "terme", "raison", "fichier_verification", "empreinte_enonce", "date"}.
+    Absent → registre vide (état normal au premier run). Corrompu ou
+    illisible → ErreurRegistre (visible, jamais {} silencieux).
     """
     chemin = _chemin_registre_impossibles()
     try:
         with open(chemin, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
+    except OSError as e:
+        raise ErreurRegistre(
+            f"registre illisible : {chemin} ({e})") from e
+    except ValueError as e:
+        raise ErreurRegistre(
+            f"registre corrompu (JSON invalide) : {chemin} ({e})") from e
+    if not isinstance(data, dict):
+        raise ErreurRegistre(
+            f"registre corrompu (racine non-objet) : {chemin}")
+    return data
 
 
-def _cle_registre(sorry: str, trou: str, terme: str) -> str:
-    return f"{sorry}\x00{trou}\x00{terme}"
-
-
-def est_impossible_valide(sorry: str, trou: str, terme: str,
+def est_impossible_valide(sorry: str, candidat: str, trou: str,
+                          type_trou: str, terme: str, empreinte: str,
                           registre: dict | None = None) -> bool:
-    """Cette direction a-t-elle été RÉFUTÉE par Lean ?"""
+    """Cette direction a-t-elle été RÉFUTÉE par Lean pour cet énoncé ?
+
+    Seules les entrées v2 (clé complète + empreinte) sont consultées :
+    les entrées legacy ne sont jamais réutilisées silencieusement.
+    """
     reg = registre if registre is not None else lire_impossibles_valides()
-    return _cle_registre(sorry, trou, terme) in reg
+    return _cle_registre(sorry, candidat, trou, type_trou, terme,
+                         empreinte) in reg
 
 
-def inscrire_impossible_valide(sorry: str, trou: str, type_trou: str,
-                               terme: str, raison: str,
-                               fichier_verification: str) -> None:
-    """Inscrit une direction CONFIRMÉE par Lean au registre.
+def inscrire_impossible_valide(sorry: str, candidat: str, trou: str,
+                               type_trou: str, terme: str, raison: str,
+                               fichier_verification: str,
+                               empreinte: str) -> dict:
+    """Inscrit une direction CONFIRMÉE par Lean au registre (schéma v2).
 
     Appelé uniquement depuis --valider-solidite sur statut CONFIRMÉ
-    (RÉFUTÉ par Lean). Le registre est append-only par conception :
-    on ne supprime jamais sans ordre explicite.
+    (RÉFUTÉ par Lean). Écriture atomique (temporaire + os.replace) :
+    pas de registre tronqué en cas d'interruption. Échec → ErreurRegistre
+    (visible), jamais silencieux. Le registre est append-only par
+    conception : on ne supprime jamais sans ordre explicite.
     """
     chemin = _chemin_registre_impossibles()
     try:
         os.makedirs(os.path.dirname(chemin), exist_ok=True)
-    except OSError:
-        pass
+    except OSError as e:
+        raise ErreurRegistre(
+            f"registre non inscriptible (mkdir) : {chemin} ({e})") from e
     reg = lire_impossibles_valides()
-    reg[_cle_registre(sorry, trou, terme)] = {
+    fiche = {
+        "schema": SCHEMA_REGISTRE,
+        "sorry": sorry,
+        "candidat": candidat,
+        "trou": trou,
         "type_trou": type_trou,
+        "terme": terme,
         "raison": raison,
         "fichier_verification": fichier_verification,
+        "empreinte_enonce": empreinte,
         "date": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    reg[_cle_registre(sorry, candidat, trou, type_trou, terme,
+                      empreinte)] = fiche
+    tmp = f"{chemin}.tmp-{os.getpid()}"
     try:
-        with open(chemin, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(reg, fh, indent=2, ensure_ascii=False)
-    except OSError:
-        pass
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, chemin)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise ErreurRegistre(
+            f"registre non inscriptible : {chemin} ({e})") from e
+    return fiche
 
 
 def classifier_directions_trou(type_cible: str, contexte: list,
@@ -1359,11 +1452,13 @@ def _directions_par_trou(d: DeclarationProuvee, noms_sorry: set,
 
 def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
                            dossier: str, sorry: str = "") -> tuple:
-    """(mesure, impossibles) en une seule passe.
+    """(mesure, impossibles, meta_registre) en une seule passe.
 
     mesure = {"trous": {nom: comptes_4_zones}, "directions_ouvertes": n} ;
     impossibles = [{"trou", "type_trou", "terme", "raison"}] pour la
     validation de solidité (chacune doit être RÉFUTÉE par Lean).
+    meta_registre = {"avertissement": str|None, "entrees_v2": int,
+    "entrees_legacy": int} — l'état du registre est toujours visible.
 
     Élagage réel (docs/DISCIPLINE_ELAGAGE_REEL.md) : toute direction
     CANDIDAT_IMPOSSIBLE inscrite au registre (RÉFUTÉE par Lean) devient
@@ -1375,7 +1470,20 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
         if ctx.get("ent_sorry") else []
     structures = _structures_corpus(dossier)
     defs = _defs_corps(dossier)
-    registre = lire_impossibles_valides() if sorry else {}
+    # Registre : corruption/illisibilité visibles, jamais {} silencieux.
+    # Un registre en panne n'arrête pas la mesure — il est signalé.
+    avertissement = None
+    try:
+        registre = lire_impossibles_valides() if sorry else {}
+    except ErreurRegistre as e:
+        registre, avertissement = {}, str(e)
+    n_legacy = entrees_legacy(registre)
+    empreinte = empreinte_enonce(ctx.get("enonce_sorry", "")) if sorry else ""
+    meta_registre = {
+        "avertissement": avertissement,
+        "entrees_v2": len(registre) - n_legacy,
+        "entrees_legacy": n_legacy,
+    }
     trous, ouvertes, impossibles = {}, 0, []
     for nom, cible, directions in _directions_par_trou(
             d, noms_sorry, lieurs_sorry, structures, defs):
@@ -1383,7 +1491,8 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
                    "INCONNU": 0, "IMPOSSIBLE_VALIDÉ": 0}
         for terme, zone, raison in directions:
             if (zone == "CANDIDAT_IMPOSSIBLE" and sorry
-                    and est_impossible_valide(sorry, nom, terme, registre)):
+                    and est_impossible_valide(sorry, d.nom, nom, cible,
+                                              terme, empreinte, registre)):
                 zone = "IMPOSSIBLE_VALIDÉ"
             comptes[zone] += 1
             if zone == "CANDIDAT_IMPOSSIBLE":
@@ -1392,7 +1501,8 @@ def _mesure_et_impossibles(d: DeclarationProuvee, ctx: dict,
         trous[nom] = comptes
         ouvertes += (comptes["ATTEIGNABLE"] + comptes["INCONNU"]
                      + comptes["CANDIDAT_IMPOSSIBLE"])
-    return {"trous": trous, "directions_ouvertes": ouvertes}, impossibles
+    return ({"trous": trous, "directions_ouvertes": ouvertes},
+            impossibles, meta_registre)
 
 
 def mesurer_directions(d: DeclarationProuvee, ctx: dict,
@@ -1405,7 +1515,7 @@ def mesurer_directions(d: DeclarationProuvee, ctx: dict,
     élagués : ni comptés ni reproposés. Mesure exacte de l'état du
     classifieur — 100 % fiable en tant que mesure.
     """
-    mesure, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
+    mesure, _, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return mesure
 
 
@@ -1415,7 +1525,7 @@ def directions_impossibles(d: DeclarationProuvee, ctx: dict,
     "type_trou", "terme", "raison"}]. Pour la validation de solidité —
     chacune doit être RÉFUTÉE par Lean (sinon violation → durcissement).
     Les IMPOSSIBLE_VALIDÉ du registre sont exclues (déjà tranchées)."""
-    _, impossibles = _mesure_et_impossibles(d, ctx, dossier, sorry)
+    _, impossibles, _ = _mesure_et_impossibles(d, ctx, dossier, sorry)
     return impossibles
 
 
@@ -1466,6 +1576,8 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
     scored_tries = sorted(ctx["scored"],
                          key=lambda t: (-t[1], t[0].module, t[0].nom))
     bruts: list[Candidat] = []
+    meta_registre = {"avertissement": None, "entrees_v2": 0,
+                     "entrees_legacy": 0}
     for d, score, raisons in scored_tries[:max_candidats]:
         # squelette : lieurs du sorry par nom, sinon synthèse contrôlée
         # de structures, sinon trou `?_` honnête
@@ -1473,7 +1585,8 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
         # mesure des directions (quatre zones) + élagage réel :
         # les IMPOSSIBLE_VALIDÉ du registre Lean sont retirées des
         # directions ouvertes (docs/DISCIPLINE_ELAGAGE_REEL.md).
-        mesure, impossibles = _mesure_et_impossibles(d, ctx, dossier, sorry)
+        mesure, impossibles, meta_registre = _mesure_et_impossibles(
+            d, ctx, dossier, sorry)
         bruts.append(Candidat(
             sorry=sorry, module_source=d.module, fichier_source=d.fichier,
             declaration=d.nom, ligne=d.ligne, entete_source=d.entete,
@@ -1512,6 +1625,9 @@ def candidats_cablage(sorry: str, dossier: str, chemin_registre: str | None = No
         "univers": ent_sorry.univers if ent_sorry else [],
         "variables": ent_sorry.variables if ent_sorry else [],
     }
+    # Registre : état visible (v2 utilisées, legacy à re-valider,
+    # avertissement éventuel) — même registre pour tous les candidats.
+    res["registre"] = meta_registre
     return res
 
 
@@ -2372,6 +2488,14 @@ def rendre_console(res: dict) -> str:
                 f"{len(d['trous'])} trous, "
                 f"{len(c.get('impossibles', []))} CANDIDAT_IMPOSSIBLE, "
                 f"{valides} IMPOSSIBLE_VALIDÉ (élaguées)")
+    meta = res.get("registre") or {}
+    if meta.get("avertissement"):
+        lignes.append(f"  ⚠️  registre : {meta['avertissement']}")
+    if meta.get("entrees_legacy"):
+        lignes.append(
+            f"  registre : {meta['entrees_v2']} entrée(s) v2 utilisées, "
+            f"{meta['entrees_legacy']} legacy (schéma v1, non réutilisées — "
+            f"à re-valider via --valider-solidite)")
     v = res.get("validation_solidite")
     if v:
         lignes.append(
@@ -2382,4 +2506,6 @@ def rendre_console(res: dict) -> str:
             lignes.append(
                 f"    ⚠️ VIOLATION : {f['trou']} ← {f['terme'][:60]} "
                 f"({f['verdict']})")
+        for e in v.get("erreurs_registre", []):
+            lignes.append(f"    ⚠️  erreur registre : {e}")
     return "\n".join(lignes)

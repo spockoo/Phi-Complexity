@@ -14,6 +14,9 @@ from phi_complexity.chemins_verifiables import (
     _chemin_registre_impossibles,
     candidats_cablage,
     directions_impossibles,
+    entrees_legacy,
+    empreinte_enonce,
+    ErreurRegistre,
     est_impossible_valide,
     inscrire_impossible_valide,
     lire_impossibles_valides,
@@ -61,32 +64,135 @@ class TestNomenclature:
         assert "incompatibles" in raison
 
 
+EMP = empreinte_enonce("theorem but (s : Sol) : True")
+
+
 class TestRegistre:
     def test_registre_vide_par_defaut(self, registre_isole):
         assert lire_impossibles_valides() == {}
-        assert not est_impossible_valide("s", "trou", "terme")
+        assert not est_impossible_valide("s", "c", "trou", "Nat", "terme",
+                                         EMP)
 
     def test_inscrire_puis_lire(self, registre_isole):
-        inscrire_impossible_valide("but", "h", "Nat", "s",
-                                   "têtes incompatibles", "Solidite_but_0_0.lean")
+        inscrire_impossible_valide("but", "cand", "h", "Nat", "s",
+                                   "têtes incompatibles", "Solidite_but_0_0.lean",
+                                   EMP)
         reg = lire_impossibles_valides()
         assert len(reg) == 1
-        assert est_impossible_valide("but", "h", "s")
-        assert not est_impossible_valide("but", "h", "autre")
-        assert not est_impossible_valide("autre_sorry", "h", "s")
+        assert est_impossible_valide("but", "cand", "h", "Nat", "s", EMP)
+        assert not est_impossible_valide("but", "cand", "h", "Nat", "autre",
+                                         EMP)
+        assert not est_impossible_valide("autre_sorry", "cand", "h", "Nat",
+                                         "s", EMP)
 
     def test_registre_persiste_sur_disque(self, registre_isole):
-        inscrire_impossible_valide("but", "h", "Nat", "s", "r", "f.lean")
+        fiche = inscrire_impossible_valide("but", "cand", "h", "Nat", "s",
+                                           "r", "f.lean", EMP)
         data = json.loads(open(registre_isole, encoding="utf-8").read())
         assert len(data) == 1
-        fiche = next(iter(data.values()))
-        assert fiche["type_trou"] == "Nat"
-        assert "date" in fiche
+        fiche_lue = next(iter(data.values()))
+        assert fiche_lue["type_trou"] == "Nat"
+        assert fiche_lue["candidat"] == "cand"
+        assert fiche_lue["empreinte_enonce"] == EMP
+        assert fiche_lue["schema"] == 2
+        assert "date" in fiche_lue
+        assert fiche == fiche_lue
 
-    def test_registre_illisible_ne_leve_pas(self, registre_isole):
+    def test_registre_corrompu_leve_erreur_visible(self, registre_isole):
+        # Durcissement : la corruption n'est plus un {} silencieux.
         with open(registre_isole, "w", encoding="utf-8") as fh:
             fh.write("pas du json {{{")
-        assert lire_impossibles_valides() == {}
+        with pytest.raises(ErreurRegistre, match="corrompu"):
+            lire_impossibles_valides()
+
+    def test_registre_racine_non_objet_leve(self, registre_isole):
+        with open(registre_isole, "w", encoding="utf-8") as fh:
+            fh.write("[1, 2, 3]")
+        with pytest.raises(ErreurRegistre, match="corrompu"):
+            lire_impossibles_valides()
+
+
+class TestRegistreDurci:
+    """Schéma v2 (2026-10-01) : clé complète + empreinte d'énoncé,
+    écriture atomique, legacy non réutilisé, échecs visibles."""
+
+    def test_normalisation_espaces_meme_cle(self, registre_isole):
+        inscrire_impossible_valide("but", "cand", "h", "Nat  →\n Nat", "s",
+                                   "r", "f.lean", EMP)
+        assert est_impossible_valide("but", "cand", "h", "Nat → Nat", "s",
+                                     EMP)
+        assert est_impossible_valide("but", "cand", "h", "  Nat → Nat  ",
+                                     "s", EMP)
+
+    def test_changement_enonce_invalide_les_validations(self,
+                                                       registre_isole):
+        # Le corpus évolue (énoncé différent) → l'ancienne validation
+        # ne s'applique plus silencieusement.
+        inscrire_impossible_valide("but", "cand", "h", "Nat", "s",
+                                   "r", "f.lean", EMP)
+        autre = empreinte_enonce("theorem but (s : Sol) (t : Nat) : True")
+        assert autre != EMP
+        assert not est_impossible_valide("but", "cand", "h", "Nat", "s",
+                                         autre)
+
+    def test_meme_direction_autre_candidat_cle_distincte(self,
+                                                        registre_isole):
+        inscrire_impossible_valide("but", "cand1", "h", "Nat", "s",
+                                   "r", "f.lean", EMP)
+        assert not est_impossible_valide("but", "cand2", "h", "Nat", "s",
+                                         EMP)
+
+    def test_legacy_non_reutilise_mais_compte(self, registre_isole):
+        # Entrée v1 (ancienne clé sans empreinte) : visible, jamais
+        # réutilisée pour l'élagage.
+        with open(registre_isole, "w", encoding="utf-8") as fh:
+            json.dump({"but\x00h\x00s": {"type_trou": "Nat"}}, fh)
+        reg = lire_impossibles_valides()
+        assert entrees_legacy(reg) == 1
+        assert not est_impossible_valide("but", "cand", "h", "Nat", "s",
+                                         EMP, reg)
+
+    def test_ecriture_atomique_pas_de_tronque(self, registre_isole):
+        # Après inscription, le fichier est un JSON complet valide et
+        # aucun .tmp ne traîne.
+        inscrire_impossible_valide("but", "cand", "h", "Nat", "s",
+                                   "r", "f.lean", EMP)
+        data = json.loads(open(registre_isole, encoding="utf-8").read())
+        assert len(data) == 1
+        restes = [f for f in os.listdir(os.path.dirname(registre_isole))
+                  if f.startswith("impossibles_valides.json.tmp")]
+        assert restes == []
+
+    def test_inscription_impossible_leve(self, registre_isole,
+                                        monkeypatch):
+        # Dossier non inscriptible → ErreurRegistre visible, pas de
+        # `except: pass`.
+        monkeypatch.setattr(
+            "phi_complexity.chemins_verifiables._chemin_registre_impossibles",
+            lambda: "/proc/impossible/ir.lean.json")
+        with pytest.raises(ErreurRegistre, match="non inscriptible"):
+            inscrire_impossible_valide("but", "cand", "h", "Nat", "s",
+                                       "r", "f.lean", EMP)
+
+    def test_mesure_signale_registre_corrompu(self, dossier_elagage,
+                                             registre_isole):
+        # La mesure continue mais le meta signale la corruption.
+        with open(registre_isole, "w", encoding="utf-8") as fh:
+            fh.write("{{{")
+        res = candidats_cablage("but", dossier_elagage, max_candidats=1)
+        assert res["statut"] == "TROUVÉ"
+        meta = res["registre"]
+        assert meta["avertissement"] is not None
+        assert "corrompu" in meta["avertissement"]
+
+    def test_mesure_compte_legacy(self, dossier_elagage, registre_isole):
+        with open(registre_isole, "w", encoding="utf-8") as fh:
+            json.dump({"but\x00h\x00s": {"type_trou": "Nat"}}, fh)
+        res = candidats_cablage("but", dossier_elagage, max_candidats=1)
+        meta = res["registre"]
+        assert meta["entrees_legacy"] == 1
+        assert meta["entrees_v2"] == 0
+        assert meta["avertissement"] is None
 
 
 class TestElagageReel:
@@ -102,8 +208,10 @@ class TestElagageReel:
         assert avant > 0
 
         # Lean tranche (simulé) : on inscrit au registre.
-        inscrire_impossible_valide("but", cible["trou"], cible["type_trou"],
-                                   cible["terme"], cible["raison"], "f.lean")
+        emp = empreinte_enonce(res["enonce_sorry"])
+        inscrire_impossible_valide("but", cand["declaration"], cible["trou"],
+                                   cible["type_trou"], cible["terme"],
+                                   cible["raison"], "f.lean", emp)
 
         # Mesure après : la direction est IMPOSSIBLE_VALIDÉ, élaguée.
         res2 = candidats_cablage("but", dossier_elagage, max_candidats=1)
@@ -120,7 +228,8 @@ class TestElagageReel:
 
     def test_sans_sorry_pas_de_registre(self, dossier_elagage, registre_isole):
         # mesurer_directions sans sorry : pas de consultation du registre.
-        inscrire_impossible_valide("but", "h", "Nat", "s", "r", "f.lean")
+        inscrire_impossible_valide("but", "cand", "h", "Nat", "s", "r",
+                                   "f.lean", EMP)
         res = candidats_cablage("but", dossier_elagage, max_candidats=1)
         assert res["candidats"][0]["directions"]["directions_ouvertes"] > 0
 
