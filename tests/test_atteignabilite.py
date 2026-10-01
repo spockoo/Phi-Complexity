@@ -2,10 +2,10 @@
 
 Discipline : docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md
 - ATTEIGNABLE : équivalence après dépliage (± permutation des lieurs).
-- IMPOSSIBLE : dépliage complet des deux côtés, têtes structurellement
+- CANDIDAT_IMPOSSIBLE : dépliage complet des deux côtés, têtes structurellement
   incompatibles. Prétention falsifiable : Lean doit RÉFUTER le câblage.
 - INCONNU : borne atteinte avec du dépliage restant, ou mismatch non décisif
-  (paire ∀/→, paire de coercition). Aveu d'ignorance, jamais un IMPOSSIBLE
+  (paire ∀/→, paire de coercition). Aveu d'ignorance, jamais un CANDIDAT_IMPOSSIBLE
   déguisé.
 """
 
@@ -137,19 +137,19 @@ class TestAtteignabilite:
 
     def test_impossible_fleche_vs_reel(self):
         zone, raison = _atteignabilite("ℝ", "Fin 3 → ℝ", {})
-        assert zone == "IMPOSSIBLE"
+        assert zone == "CANDIDAT_IMPOSSIBLE"
         assert "→" in raison and "ℝ" in raison
 
     def test_impossible_forall_vs_reel(self):
         zone, _ = _atteignabilite("∀ t, P t", "ℝ", {})
-        assert zone == "IMPOSSIBLE"
+        assert zone == "CANDIDAT_IMPOSSIBLE"
 
     def test_impossible_apres_depliage(self):
         zone, _ = _atteignabilite("MyR", "∀ t, P t", {"MyR": "ℝ"})
-        assert zone == "IMPOSSIBLE"
+        assert zone == "CANDIDAT_IMPOSSIBLE"
 
     def test_inconnu_coercition(self):
-        # ℕ → ℝ : Lean peut insérer une coercition — jamais IMPOSSIBLE
+        # ℕ → ℝ : Lean peut insérer une coercition — jamais CANDIDAT_IMPOSSIBLE
         zone, _ = _atteignabilite("ℕ", "ℝ", {})
         assert zone == "INCONNU"
 
@@ -191,7 +191,7 @@ class TestDirectionsTrou:
         _, comptes = classifier_directions_trou(
             "Nat → Nat", [("s", "Sol")], structs, defs, {})
         # s.u ATTEIGNABLE ; s, s.h, s.mom prouvablement impossibles
-        assert comptes == {"ATTEIGNABLE": 1, "IMPOSSIBLE": 3, "INCONNU": 0}
+        assert comptes == {"ATTEIGNABLE": 1, "CANDIDAT_IMPOSSIBLE": 3, "INCONNU": 0}
 
     def test_directions_nommees(self, dossier_atteignabilite):
         structs = _structures_corpus(dossier_atteignabilite)
@@ -200,12 +200,12 @@ class TestDirectionsTrou:
             "Nat → Nat", [("s", "Sol")], structs, defs, {})
         par_terme = {t: z for t, z, _ in directions}
         assert par_terme["s.u"] == "ATTEIGNABLE"
-        assert par_terme["s"] == "IMPOSSIBLE"
-        assert par_terme["s.mom"] == "IMPOSSIBLE"
+        assert par_terme["s"] == "CANDIDAT_IMPOSSIBLE"
+        assert par_terme["s.mom"] == "CANDIDAT_IMPOSSIBLE"
 
     def test_trou_dependant_apres_substitution(self, dossier_atteignabilite):
         # hm : u 0 = 0 avec u → s.u : s.mom devient ATTEIGNABLE
-        # (sans le subst séquentiel ce serait un faux IMPOSSIBLE)
+        # (sans le subst séquentiel ce serait un faux CANDIDAT_IMPOSSIBLE)
         structs = _structures_corpus(dossier_atteignabilite)
         defs = _defs_corps(dossier_atteignabilite)
         directions, comptes = classifier_directions_trou(
@@ -223,12 +223,15 @@ class TestMesureIntegration:
         mesure = par_nom["cand"]["directions"]
         assert set(mesure["trous"]) == {"u", "hm", "hr"}
         for trou, comptes in mesure["trous"].items():
-            assert set(comptes) == {"ATTEIGNABLE", "IMPOSSIBLE", "INCONNU"}, trou
+            assert set(comptes) == {"ATTEIGNABLE", "CANDIDAT_IMPOSSIBLE",
+                                    "INCONNU", "IMPOSSIBLE_VALIDÉ"}, trou
         # u : s.u atteignable ; hm : s.mom après subst ; hr : ?_ (1 INCONNU)
         assert mesure["trous"]["u"]["ATTEIGNABLE"] == 1
         assert mesure["trous"]["hm"]["ATTEIGNABLE"] == 1
         assert mesure["trous"]["hr"]["ATTEIGNABLE"] == 0
-        assert mesure["directions_ouvertes"] == 3
+        # ouvertes = ATTEIGNABLE + INCONNU + CANDIDAT_IMPOSSIBLE
+        # (les candidats non falsifiés restent ouverts)
+        assert mesure["directions_ouvertes"] == 12
 
     def test_squelette_inchange(self, dossier_atteignabilite):
         # non-régression : la mesure n'altère pas les squelettes

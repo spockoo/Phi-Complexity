@@ -242,11 +242,13 @@ Exemples :
                                           "admissible)")
     chemins_verifiables.add_argument("--valider-solidite", type=int, default=0,
                                      metavar="K",
-                                     help="Validation de solidité du classifieur à trois zones : "
-                                          "soumet à Lean K directions prédites IMPOSSIBLE par "
+                                     help="Validation de solidité du classifieur : "
+                                          "soumet à Lean K directions CANDIDAT_IMPOSSIBLE par "
                                           "candidat (échantillon stratifié par trou, test minimal "
                                           "`example : T := t`). Attendu : RÉFUTÉ partout ; "
                                           "PROUVÉ = violation de solidité → durcissement. "
+                                          "Tout CONFIRMÉ est inscrit au registre des "
+                                          "IMPOSSIBLE_VALIDÉ (élagage réel). "
                                           "(défaut : 0, désactivé)")
 
     ou_aller = subparsers.add_parser("ou-aller",
@@ -881,6 +883,7 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
         extraire_entete,
         fichier_validation_solidite,
         fichier_verification,
+        inscrire_impossible_valide,
         interpreter_solidite,
         realiser_chemins,
         rendre_chemins,
@@ -959,14 +962,17 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                 c["fichier_verification"] = chemin_v
     n_solidite = getattr(args, "valider_solidite", 0) or 0
     if n_solidite > 0:
-        # Validation de solidité : chaque direction prédite IMPOSSIBLE est
+        # Validation de solidité : chaque direction CANDIDAT_IMPOSSIBLE est
         # soumise à Lean via un test minimal. Protocole falsifiable
-        # (docs/DISCIPLINE_ATTEIGNABILITE_TYPEE.md) : PROUVÉ = violation.
+        # (docs/DISCIPLINE_ELAGAGE_REEL.md) : PROUVÉ = violation.
+        # Boucle de feedback : tout CONFIRMÉ (RÉFUTÉ par Lean) est inscrit
+        # au registre des IMPOSSIBLE_VALIDÉ → élagage réel aux prochains runs.
         timeout = getattr(args, "timeout", 600)
         garder = getattr(args, "garder", False)
         groupes, _noms, _conclusion = analyser_entete(
             res["enonce_sorry"], args.sorry)
-        bilan = {"confirmes": 0, "violations": [], "inconclusifs": []}
+        bilan = {"confirmes": 0, "violations": [], "inconclusifs": [],
+                 "inscrits_registre": 0}
         for i, c in enumerate(res["candidats"]):
             # échantillon stratifié : tourniquet sur les trous pour couvrir
             # des décisions différentes du classifieur, pas N fois le même.
@@ -1008,6 +1014,17 @@ def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
                     fiche["fichier"] = chemin_v
                 if statut == "CONFIRMÉ":
                     bilan["confirmes"] += 1
+                    # Élagage réel : Lean a RÉFUTÉ → IMPOSSIBLE_VALIDÉ.
+                    try:
+                        inscrire_impossible_valide(
+                            args.sorry, p["trou"], p["type_trou"], p["terme"],
+                            p["raison"],
+                            chemin_v if garder else
+                            f"Solidite_{args.sorry}_{i}_{j}.lean")
+                        bilan["inscrits_registre"] += 1
+                        fiche["registre"] = "IMPOSSIBLE_VALIDÉ"
+                    except Exception:
+                        pass
                 elif statut == "VIOLATION":
                     fiche["diagnostic"] = v["diagnostic"]
                     bilan["violations"].append(fiche)
