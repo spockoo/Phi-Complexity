@@ -34,6 +34,7 @@ from phi_complexity.sondes import (
     Obstruction,
     RegistreSondes,
     est_double_verdict,
+    registre_disponible,
     rendre_sonde_console,
     sonder,
     versions_double_verdict,
@@ -41,16 +42,21 @@ from phi_complexity.sondes import (
 
 REGISTRE = REGISTRE_DEFAUT
 
+# Sondes opt-in : les fixtures se taisent (skip) sans la chaîne Lean,
+# au lieu d'échouer. Les tests purs du module restent actifs partout.
+
 
 @pytest.fixture(scope="module")
 def registre():
-    assert os.path.isfile(REGISTRE), f"registre introuvable : {REGISTRE}"
+    if not registre_disponible():
+        pytest.skip("sonde opt-in : registre Lean absent de cette machine")
     return RegistreSondes().charger(REGISTRE)
 
 
 @pytest.fixture(scope="module")
 def posterieurs():
-    assert os.path.isdir(DOSSIER_DEFAUT), f"dossier introuvable : {DOSSIER_DEFAUT}"
+    if not os.path.isdir(DOSSIER_DEFAUT):
+        pytest.skip("sonde opt-in : chaîne Lean absente de cette machine")
     return posterieurs_symboles(DOSSIER_DEFAUT)
 
 

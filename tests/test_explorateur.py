@@ -31,6 +31,14 @@ from phi_complexity.sondes import (
     Hypothese,
     RegistreSondes,
     REGISTRE_DEFAUT,
+    registre_disponible,
+)
+
+# Sondes opt-in : sans la chaîne Lean, les classes couplées au registre
+# se taisent (skip) au lieu d'échouer. Les classes pures restent actives.
+necessite_registre = pytest.mark.skipif(
+    not registre_disponible(),
+    reason="sonde opt-in : registre Lean absent de cette machine",
 )
 
 
@@ -216,6 +224,7 @@ class TestOffline:
         _ = json.loads(m.group(1))  # JSON toujours valide
 
 
+@necessite_registre
 class TestNonMutation:
     """Les objets Hypothese du registre ne sont jamais mutés."""
 
@@ -230,6 +239,7 @@ class TestNonMutation:
         assert avant == apres
 
 
+@necessite_registre
 class TestIntegration:
     """Un mécanisme réel du registre, de bout en bout (sans indexation dossier)."""
 

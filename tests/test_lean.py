@@ -26,7 +26,8 @@ grammaire_ok = pytest.mark.skipif(
     reason="grammaire lean indisponible",
 )
 
-TEMOIN = "/home/hatch/workspace/lean-navier-stokes/Part16f_HilbertTruncatedL2.lean"
+TEMOIN = os.path.expanduser(
+    "~/workspace/lean-navier-stokes/Part16f_HilbertTruncatedL2.lean")
 
 # Lieurs / identifiants internes qui NE DOIVENT JAMAIS apparaître comme symboles.
 BRUIT_INTERDIT = {"ξ", "f", "ε", "R", "hm", "C", "x", "m", "<anonyme>"}

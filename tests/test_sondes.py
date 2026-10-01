@@ -19,6 +19,7 @@ from phi_complexity.sondes import (
     CLES_INTERDITES,
     RegistreSondes,
     REGISTRE_DEFAUT,
+    registre_disponible,
     resoudre_mecanisme,
     sonder,
     rendre_sonde_console,
@@ -27,10 +28,19 @@ from phi_complexity.sondes import (
 
 REGISTRE = REGISTRE_DEFAUT
 
+# Sondes opt-in : la fixture se tait (skip) sans la chaîne Lean au lieu
+# d'échouer ; les tests CLI couplés portent la marque, les tests purs
+# (dont test_sonde_registre_introuvable) restent actifs partout.
+necessite_registre = pytest.mark.skipif(
+    not registre_disponible(),
+    reason="sonde opt-in : registre Lean absent de cette machine",
+)
+
 
 @pytest.fixture(scope="module")
 def registre():
-    assert os.path.isfile(REGISTRE), f"registre introuvable : {REGISTRE}"
+    if not registre_disponible():
+        pytest.skip("sonde opt-in : registre Lean absent de cette machine")
     return RegistreSondes().charger(REGISTRE)
 
 
@@ -349,12 +359,14 @@ class TestCLI:
             cwd=self.V110, env=env,
         )
 
+    @necessite_registre
     def test_sonde_console_exit_0(self):
         p = self._phi("sonde", "energy_identity")
         assert p.returncode == 0, p.stderr[-500:]
         assert "SONDE A" in p.stdout and "SONDE B" in p.stdout
         assert "TERRA INCOGNITA" in p.stdout
 
+    @necessite_registre
     def test_sonde_json_exit_0_et_valide(self):
         p = self._phi("sonde", "maximalTime_pos", "--format", "json")
         assert p.returncode == 0, p.stderr[-500:]

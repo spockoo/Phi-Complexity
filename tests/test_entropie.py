@@ -12,6 +12,7 @@ vérifient le ΔH SIGNÉ et sa sémantique documentée, pas une positivité inve
 
 import json
 import math
+import os
 
 import pytest
 
@@ -29,7 +30,20 @@ from phi_complexity.entropie import (
     renormaliser,
     tracer_resserrement,
 )
-from phi_complexity.sondes import CLES_INTERDITES, Hypothese
+from phi_complexity.sondes import (
+    CLES_INTERDITES,
+    Hypothese,
+    REGISTRE_DEFAUT,
+    registre_disponible,
+)
+
+# Sondes opt-in : sans la chaîne Lean, les tests couplés au registre
+# se taisent (skip) au lieu d'échouer. Les tests purs restent actifs.
+necessite_registre = pytest.mark.skipif(
+    not registre_disponible(),
+    reason="sonde opt-in : registre Lean absent de cette machine",
+)
+CHAINE_LEAN = os.path.dirname(REGISTRE_DEFAUT)
 
 
 def _h(nom: str, statut: str = "CONDITIONNEL") -> Hypothese:
@@ -213,10 +227,11 @@ def test_renormaliser_tout_tue():
 # Intégration : mécanisme inconnu, interdiction, bandeau
 # ────────────────────────────────────────────────────────
 
+@necessite_registre
 def test_mecanisme_inconnu_ne_crash_pas():
     res = entropie_depuis_sonde("zz_mecanisme_inexistant_zzz",
-                                chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-                                dossier="/home/hatch/workspace/lean-navier-stokes")
+                                chemin_registre=REGISTRE_DEFAUT,
+                                dossier=CHAINE_LEAN)
     assert res.noeuds == []
     assert res.type_mecanisme == "inconnu"
 
@@ -232,11 +247,12 @@ def _balayer_cles_interdites(obj, trouves):
             _balayer_cles_interdites(v, trouves)
 
 
+@necessite_registre
 def test_interdiction_json():
     # Aucune clé de CLES_INTERDITES dans toute la sortie JSON — comme les sondes.
     res = entropie_depuis_sonde("BKM_criterion",
-                                chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-                                dossier="/home/hatch/workspace/lean-navier-stokes")
+                                chemin_registre=REGISTRE_DEFAUT,
+                                dossier=CHAINE_LEAN)
     d = res.vers_dict()
     json.dumps(d, ensure_ascii=False)  # sérialisable
     trouves: list = []
@@ -244,21 +260,23 @@ def test_interdiction_json():
     assert trouves == [], f"clés interdites trouvées : {trouves}"
 
 
+@necessite_registre
 def test_console_bandeau_interdiction():
     res = entropie_depuis_sonde("BKM_criterion",
-                                chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-                                dossier="/home/hatch/workspace/lean-navier-stokes")
+                                chemin_registre=REGISTRE_DEFAUT,
+                                dossier=CHAINE_LEAN)
     texte = rendre_entropie_console(res)
     assert "INTERDICTION FORMELLE" in texte
     assert "jamais P(A)" in texte or "aucune probabilité P(A)" in texte
     assert "ΔH" in texte
 
 
+@necessite_registre
 def test_bkm_criterion_trace_reelle():
     # Application registry-grounded : la sonde B de BKM_criterion porte H21.
     res = entropie_depuis_sonde("BKM_criterion",
-                                chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-                                dossier="/home/hatch/workspace/lean-navier-stokes")
+                                chemin_registre=REGISTRE_DEFAUT,
+                                dossier=CHAINE_LEAN)
     assert len(res.noeuds) > 0
     rattaches = [e for e in res.evenements if e.rattache]
     assert len(rattaches) >= 1  # au moins H21
@@ -267,9 +285,10 @@ def test_bkm_criterion_trace_reelle():
     assert somme == pytest.approx(res.h_initial_bits - res.h_finale_bits, abs=1e-9)
 
 
+@necessite_registre
 def test_determinisme():
-    kw = dict(chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-              dossier="/home/hatch/workspace/lean-navier-stokes")
+    kw = dict(chemin_registre=REGISTRE_DEFAUT,
+              dossier=CHAINE_LEAN)
     r1 = entropie_depuis_sonde("BKM_criterion", **kw)
     r2 = entropie_depuis_sonde("BKM_criterion", **kw)
     assert r1.h_initial_bits == r2.h_initial_bits
@@ -432,9 +451,10 @@ def test_dag_couches_attaque_modele_reference():
     assert rt["taux_branchement_mesure_bits"] is not None
 
 
+@necessite_registre
 def test_booleanisation_et_routes_sur_mecanisme_reel():
-    kw = dict(chemin_registre="/home/hatch/workspace/lean-navier-stokes/REGISTRE_HYPOTHESES_20260929.md",
-              dossier="/home/hatch/workspace/lean-navier-stokes")
+    kw = dict(chemin_registre=REGISTRE_DEFAUT,
+              dossier=CHAINE_LEAN)
     res = entropie_depuis_sonde("BKM_criterion", **kw)
     bc = res.booleanisation
     assert bc["booleanization_cost_bits"] >= -1e-12

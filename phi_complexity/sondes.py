@@ -176,6 +176,16 @@ REGISTRE_DEFAUT = os.path.expanduser(
 )
 
 
+def registre_disponible() -> bool:
+    """Le registre Lean réel est-il présent sur cette machine ?
+
+    Les sondes sont opt-in par conception : elles sondent la vraie chaîne
+    Lean quand elle est là, et se taisent (skip) sinon — jamais d'échec
+    sur une machine sans la chaîne (ex. CI publique).
+    """
+    return os.path.isfile(REGISTRE_DEFAUT)
+
+
 # ────────────────────────────────────────────────────────
 # MODÈLE DE DONNÉES
 # ────────────────────────────────────────────────────────
