@@ -118,7 +118,8 @@ class TestCandidats:
         assert noms[0] == "pont"
         c0 = res["candidats"][0]
         assert any("clôture d'imports" in r for r in c0["raisons"])
-        assert any("même tête de conclusion" in r for r in c0["raisons"])
+        assert any("même tête logique de conclusion" in r
+                   for r in c0["raisons"])
 
     def test_aucune_source_avec_sorry(self, dossier):
         res = candidats_cablage("but", dossier)
