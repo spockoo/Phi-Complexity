@@ -779,8 +779,8 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
                 ch = _fabriquer(
                     lemmes2, scores2,
                     [r for _, _, rs in prefixe for r in rs] + list(raisons)
-                    + [f"chaînage : {' → '.join(
-                        x.nom for x in lemmes2)}"],
+                    + ["chaînage : " + " → ".join(
+                        x.nom for x in lemmes2)],
                     _squelette_chaine(lemmes2, lieurs_sorry))
                 admissibles.append(ch)
             sig = tuple(x.nom for x in lemmes2)
