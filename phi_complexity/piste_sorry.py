@@ -113,7 +113,8 @@ def sorrys_dans_fichier(chemin: str) -> list:
 def inventorier_sorrys(dossier: str) -> list:
     """Tous les sorrys réels des .lean sous `dossier` (récursif, trié)."""
     res = []
-    for racine, _, fichiers in os.walk(dossier):
+    for racine, dirs, fichiers in os.walk(dossier):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for nom in sorted(fichiers):
             if nom.endswith(".lean"):
                 res.extend(sorrys_dans_fichier(os.path.join(racine, nom)))
@@ -133,7 +134,8 @@ def _nom_module(chemin: str, dossier: str) -> str:
 def graphe_imports(dossier: str) -> dict:
     """Graphe des imports : nom de module -> modules importés (noms Lean)."""
     graphe = {}
-    for racine, _, fichiers in os.walk(dossier):
+    for racine, dirs, fichiers in os.walk(dossier):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
         for nom in fichiers:
             if not nom.endswith(".lean"):
                 continue

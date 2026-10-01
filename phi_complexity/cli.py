@@ -207,6 +207,35 @@ Exemples :
     piste_sorry.add_argument("--format", choices=["console", "json"], default="console",
                              help="Format de sortie (console lisible, ou json pour les agents/jq)")
 
+    chemins_verifiables = subparsers.add_parser("chemins-verifiables",
+                                               help="Chemins vérifiables vers un sorry : "
+                                                    "candidats de câblage guidés, chacun "
+                                                    "identifié formellement comme une preuve "
+                                                    "que Lean tranche (PROUVÉ / RÉFUTÉ / "
+                                                    "INDÉCIDÉ)")
+    chemins_verifiables.add_argument("dossier",
+                                     help="Dossier du projet Lean 4 à explorer")
+    chemins_verifiables.add_argument("--sorry", required=True,
+                                     help="Nom du sorry visé (ex. leray_existence)")
+    chemins_verifiables.add_argument("--registre", default=None,
+                                     help="Chemin du registre vivant des hypothèses "
+                                          "(opt-in ; défaut : REGISTRE_HYPOTHESES_20260929.md "
+                                          "du dépôt lean)")
+    chemins_verifiables.add_argument("--max-candidats", type=int, default=12,
+                                     help="Borne anti-explosion : au plus N candidats "
+                                          "(défaut : 12)")
+    chemins_verifiables.add_argument("--verifier", action="store_true",
+                                     help="Faire trancher chaque candidat par Lean "
+                                          "(lake env lean, borné par --timeout)")
+    chemins_verifiables.add_argument("--timeout", type=int, default=600,
+                                     help="Timeout Lean par candidat en secondes "
+                                          "(défaut : 600)")
+    chemins_verifiables.add_argument("--garder", action="store_true",
+                                     help="Conserver les fichiers de vérification générés "
+                                          "dans le dossier (défaut : supprimés après verdict)")
+    chemins_verifiables.add_argument("--format", choices=["console", "json"], default="console",
+                                     help="Format de sortie (console lisible, ou json pour les agents/jq)")
+
     ou_aller = subparsers.add_parser("ou-aller",
                                      help="Où aller : liste d'attention ordonnée "
                                           "par coût de booléanisation décroissant "
@@ -825,6 +854,76 @@ def _executer_piste_sorry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _executer_chemins_verifiables(args: argparse.Namespace) -> int:
+    """Exécute la sous-commande 'chemins-verifiables'.
+
+    Lecture seule sur le dossier (sauf --verifier, qui écrit des fichiers
+    temporaires de vérification puis les supprime sauf --garder).
+    Codes : 0 = candidats émis ; 2 = sorry introuvable ; 1 = erreur.
+    """
+    import json
+    from .chemins_verifiables import (
+        analyser_entete,
+        candidats_cablage,
+        extraire_entete,
+        fichier_verification,
+        rendre_console,
+        verdict_lean,
+    )
+    from .piste_sorry import decaper_lean
+    dossier = args.dossier
+    if not os.path.isdir(dossier):
+        print(f"❌ Dossier introuvable : {dossier}")
+        return 1
+    try:
+        from .sondes import REGISTRE_DEFAUT
+    except Exception:
+        REGISTRE_DEFAUT = None
+    chemin_registre = getattr(args, "registre", None) or REGISTRE_DEFAUT
+    try:
+        res = candidats_cablage(
+            args.sorry, dossier, chemin_registre=chemin_registre,
+            max_candidats=getattr(args, "max_candidats", 12))
+    except Exception as e:
+        print(f"❌ Erreur lors de la recherche de candidats : {e}")
+        return 1
+    if res["statut"] == "INTROUVABLE":
+        if getattr(args, "format", "console") == "json":
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+        else:
+            print(rendre_console(res))
+        return 2
+    if getattr(args, "verifier", False):
+        timeout = getattr(args, "timeout", 600)
+        garder = getattr(args, "garder", False)
+        groupes, noms, conclusion = analyser_entete(
+            res["enonce_sorry"], args.sorry)
+        for i, c in enumerate(res["candidats"]):
+            contenu = fichier_verification(
+                args.sorry, c, res["module_sorry"], groupes, conclusion)
+            chemin_v = os.path.join(
+                dossier, f"Verification_{args.sorry}_{i}.lean")
+            try:
+                with open(chemin_v, "w", encoding="utf-8") as fh:
+                    fh.write(contenu)
+                v = verdict_lean(chemin_v, dossier, timeout_s=timeout)
+            finally:
+                if not garder:
+                    try:
+                        os.remove(chemin_v)
+                    except OSError:
+                        pass
+            c["verdict"] = v["verdict"]
+            c["diagnostic"] = v["diagnostic"]
+            if garder:
+                c["fichier_verification"] = chemin_v
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+    else:
+        print(rendre_console(res))
+    return 0
+
+
 def _executer_entropie(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'entropie' : H et ΔH en bits sur la Sonde B.
 
@@ -905,6 +1004,10 @@ def main():
     if args.commande == "piste-sorry":
         # La piste lit le dossier Lean (+ registre opt-in) : court-circuit.
         sys.exit(_executer_piste_sorry(args))
+
+    if args.commande == "chemins-verifiables":
+        # Les candidats lisent le dossier Lean (+ registre opt-in) : court-circuit.
+        sys.exit(_executer_chemins_verifiables(args))
 
     if args.commande == "entropie":
         # La lentille entropique lit registre + croyances : court-circuit.
