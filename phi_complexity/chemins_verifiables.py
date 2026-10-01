@@ -12,8 +12,11 @@ propose, Lean dispose :
 Portée honnête (v1) :
 - candidats mono-source : un théorème/lemme PROUVÉ (jamais une déclaration
   contenant un sorry) proposé comme ingrédient principal ;
-- classement GUIDÉ et expliqué (même fichier, clôture d'imports, chantiers
-  du registre, recouvrement de conclusion) — pas d'explosion combinatoire
+- classement GUIDÉ et expliqué — preuve typée directe d'abord
+  (tête logique pondérée par rareté, recouvrement de types pondéré par
+  rareté, lieurs typés comme ceux du sorry), proximité de module comme
+  a priori faible (même fichier, clôture d'imports, chantiers du registre)
+  — pas d'explosion combinatoire
   (R4) : au plus `max_candidats` candidats, un squelette par candidat ;
 - les `def` ne sont pas des candidats : une définition n'est pas formellement
   identifiée comme une preuve.
@@ -36,6 +39,7 @@ Portée honnête (v2, multi-lemmes — formulation validée 2026-10-01) :
 """
 from __future__ import annotations
 
+import bisect
 import heapq
 import itertools
 import math
@@ -290,8 +294,56 @@ def _jetons_types(texte: str) -> set:
     return set(re.findall(r"\b[A-Z][A-Za-z0-9_']{2,}\b", texte))
 
 
+#: Infixes propositionnels reconnus comme tête après dépouillement des
+#: lieurs : `a = b` est une proposition `Eq`, pas une proposition « sol ».
+#: Le `=` exclut `==`, `=>`, `<=`, `>=`, `!=` par les gardes lookaround.
+_INFIXES_TETE = (
+    ("↔", "Iff", r"↔"),
+    ("=", "Eq", r"(?<![<>=!])=(?![=>])"),
+    ("∧", "And", r"∧"),
+    ("∨", "Or", r"∨"),
+)
+
+
+def _depouiller_lieurs(texte: str) -> str:
+    """Retire les lieurs `∀` de tête : `∀ x, ∀ t ∈ S, P x t` → `P x t`.
+
+    Le dépouillement s'arrête à la première virgule à profondeur 0
+    (les virgules dans `(0:ℝ)` ou `(f x, g y)` ne terminent pas un lieur).
+    """
+    t = (texte or "").strip()
+    while t.startswith("∀"):
+        prof = 0
+        i = 1
+        while i < len(t):
+            c = t[i]
+            if c in "([{":
+                prof += 1
+            elif c in ")]}":
+                prof -= 1
+            elif c == "," and prof == 0:
+                break
+            i += 1
+        if i >= len(t):
+            break  # `∀` sans corps : texte dégénéré, on garde tel quel
+        t = t[i + 1:].strip()
+    return t
+
+
 def _symbole_tete(conclusion: str) -> str:
-    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_']*)", conclusion)
+    """Tête logique d'une proposition : voit à travers les `∀` de tête.
+
+    `∀ x, ∀ t ∈ S, sol₁.u x t = sol₂.u x t` → `Eq` (pas `""`, pas `sol`).
+    `∃ T, P T` → `Exists`. Utilisé par le scoreur (pertinence typée) et
+    les portes de connexion.
+    """
+    t = _depouiller_lieurs(conclusion)
+    if t.startswith("∃"):
+        return "Exists"
+    for _, nom, motif in _INFIXES_TETE:
+        if re.search(motif, t):
+            return nom
+    m = re.match(r"\s*([A-Za-z_][A-Za-z0-9_']*)", t)
     return m.group(1) if m else ""
 
 
@@ -366,16 +418,42 @@ def _contexte_cablage(sorry: str, dossier: str,
     mods_chantiers = _modules_des_chantiers(
         p["registre"].get("chantiers") or [], texte_registre)
 
+    # Pool des candidats (tout ce qui peut être noté) : la rareté des
+    # jetons est relative à ce pool (IDF), pas à une liste en dur.
+    pool = [d for d in decls
+            if not d.a_sorry
+            and not (d.nom == occ["declaration"]
+                     and d.module == module_sorry)]
+    df: dict = {}
+    for d in pool:
+        for tok in _jetons_types(d.conclusion):
+            df[tok] = df.get(tok, 0) + 1
+    idf = _poids_idf(df, len(pool))
+    # Rareté des TÊTES logiques (S4) : une tête partagée par presque tout
+    # le pool (ex. `Eq` à 85 %) est un bruit quasi pur, pas un signal.
+    # Relative au pool, comme l'IDF des jetons — sans constante absolue.
+    df_tetes: dict = {}
+    for d in pool:
+        h = _symbole_tete(d.conclusion)
+        if h:
+            df_tetes[h] = df_tetes.get(h, 0) + 1
+    idf_tetes = _poids_idf(df_tetes, len(pool))
+    # Têtes des types des lieurs du sorry : le lemme pertinent consomme
+    # ce que le sorry fournit (au niveau des types, pas des noms).
+    tetes_lieurs_sorry = set()
+    if ent_sorry:
+        for _, typ in _lieurs_types(ent_sorry):
+            h = _symbole_tete(typ)
+            if h:
+                tetes_lieurs_sorry.add(h)
+
     scored: list = []
-    for d in decls:
-        if d.a_sorry:
-            continue  # jamais une source contenant un sorry
-        if d.nom == occ["declaration"] and d.module == module_sorry:
-            continue  # pas le sorry lui-même
+    for d in pool:
         score, raisons = _noter_declaration(
             d, module_sorry=module_sorry, cloture=cloture,
             mods_chantiers=mods_chantiers, tete_sorry=tete_sorry,
-            types_sorry=types_sorry)
+            types_sorry=types_sorry, idf=idf, idf_tetes=idf_tetes,
+            tetes_lieurs_sorry=tetes_lieurs_sorry)
         if score <= 0:
             continue
         scored.append((d, score, raisons))
@@ -395,32 +473,81 @@ def _contexte_cablage(sorry: str, dossier: str,
     }
 
 
+def _poids_idf(df: dict, n_pool: int) -> dict:
+    """Poids de rareté par jeton : log(N/df)/log(N) ∈ [0, 1].
+
+    Un jeton présent dans tout le pool (df = N) pèse 0 : le recouvrement
+    lexical sur des jetons génériques (`Set`, `Fin`, …) ne rapporte plus
+    rien. Un jeton unique au pool pèse 1. Relatif au pool, sans constante
+    absolue. N ≤ 1 → poids nuls (garde log).
+    """
+    if n_pool <= 1:
+        return {tok: 0.0 for tok in df}
+    ln = math.log(n_pool)
+    return {tok: math.log(n_pool / max(1, c)) / ln for tok, c in df.items()}
+
+
 def _noter_declaration(d: DeclarationProuvee, *, module_sorry: str,
                        cloture: set, mods_chantiers: set,
-                       tete_sorry: str, types_sorry: set) -> tuple:
-    """Note GUIDÉE et expliquée d'une déclaration (extraite de
-    candidats_cablage, comportement inchangé)."""
+                       tete_sorry: str, types_sorry: set,
+                       idf: dict | None = None,
+                       idf_tetes: dict | None = None,
+                       tetes_lieurs_sorry: set | None = None) -> tuple:
+    """Note GUIDÉE et expliquée d'une déclaration.
+
+    Composantes : proximité de module comme **a priori faible** (1 / 0.5 /
+    1 : circonstancielle, jamais décisive seule), tête logique de conclusion
+    **pondérée par rareté** (2 × IDF(tête) : une tête partagée par 85 % du
+    pool est un bruit quasi pur), recouvrement de jetons **pondéré par
+    rareté** (≤ 3), lieurs dont le type correspond à un lieur du sorry
+    (≤ 2 : le lemme consomme ce que le sorry fournit, au niveau des types,
+    pas des noms). La preuve typée directe domine l'a priori de module.
+    """
     score = 0.0
     raisons: list = []
     if d.module == module_sorry:
-        score += 3
-        raisons.append("même fichier que le sorry")
+        score += 1
+        raisons.append("même fichier que le sorry (a priori faible)")
     if d.module in cloture:
-        score += 2
-        raisons.append("dans la clôture d'imports du module du sorry")
+        score += 0.5
+        raisons.append(
+            "dans la clôture d'imports du module du sorry (a priori faible)")
     if d.module in mods_chantiers or d.fichier[:-5] in mods_chantiers:
-        score += 2
+        score += 1
         raisons.append("module cité par un chantier du registre pour ce sorry")
     if tete_sorry and _symbole_tete(d.conclusion) == tete_sorry:
-        score += 2
-        raisons.append(
-            f"même tête de conclusion ({tete_sorry})")
+        poids = idf_tetes.get(tete_sorry, 0.0) if idf_tetes else 1.0
+        pts_tete = 2.0 * poids
+        if pts_tete > 0:
+            score += pts_tete
+            raisons.append(
+                f"même tête logique de conclusion ({tete_sorry}, "
+                f"IDF={poids:.2f})")
     recouv = types_sorry & _jetons_types(d.conclusion)
     if recouv:
-        pts = min(3, len(recouv))
-        score += pts
-        raisons.append(
-            "types partagés : " + ", ".join(sorted(recouv)[:5]))
+        if idf:
+            pts = min(3.0, sum(idf.get(t, 0.0) for t in recouv))
+            det = sorted(recouv, key=lambda t: -idf.get(t, 0.0))[:5]
+        else:
+            pts = min(3, len(recouv))
+            det = sorted(recouv)[:5]
+        if pts > 0:
+            score += pts
+            raisons.append(
+                "types partagés (pondérés par rareté) : "
+                + ", ".join(det))
+    if tetes_lieurs_sorry:
+        vues = set()
+        for _, typ in _lieurs_types(d):
+            h = _symbole_tete(typ)
+            if h and h in tetes_lieurs_sorry:
+                vues.add(h)
+        if vues:
+            pts = min(2, len(vues))
+            score += pts
+            raisons.append(
+                "lieurs typés comme ceux du sorry : "
+                + ", ".join(sorted(vues)))
     return score, raisons
 
 
@@ -781,6 +908,15 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
     queue exhaustive, jamais les meilleurs candidats. Le dépassement est
     signalé honnêtement (`recherche_bornee`).
 
+    B6 — la MÉMOIRE est bornée elle aussi : seuls les `max_candidats`
+    meilleurs chemins sont retenus (top-K exact : la sortie n'utilise
+    jamais que ceux-là après tri par (-score, coût, noms)) ; le compteur
+    `admissibles_total` reste exact et `admissibles_tronques` signale la
+    troncature ; les squelettes ne sont générés que pour les retenus ;
+    la file de recherche est plafonnée à 2×max_prefixes (compaction vers
+    la moitié la moins chère, signalée par `file_bornee` — même
+    justification honnête que max_prefixes).
+
     Retourne {"statut": "TROUVÉ", "chemins": [...], "budget": B, ...} ou
     {"statut": "INDÉCIDÉ", "a_priori": True, ...} quand aucun chemin
     admissible n'existe dans le fragment D — SANS appeler Lean.
@@ -813,11 +949,29 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
     phi_par_nom = {_nom_lean(d): complexite_declaration(d)
                    for d, _, _ in scored}
 
-    admissibles: list[Chemin] = []
+    admissibles_total = 0  # compteur EXACT des chemins complets (int, pas cher)
+    # Top-K borné des chemins complets (B6) : la sortie n'utilise jamais
+    # que les `max_candidats` premiers après tri par (-score, cout, noms) —
+    # ne retenir que ceux-là est EXACT, pas une approximation. `bisect`
+    # sur la clé de tri finale ; `seq` départage les égalités de clé pour
+    # ne jamais comparer des Chemin entre eux.
+    borne_retenus = max_candidats if max_candidats else 1024
+    top: list = []  # [(cle, seq, Chemin)] trié croissant = meilleurs d'abord
+    seq_top = itertools.count()
+
+    def _retenir(ch: Chemin) -> None:
+        nonlocal admissibles_total
+        admissibles_total += 1
+        cle = (-ch.score, ch.cout, ch.noms)
+        bisect.insort(top, (cle, next(seq_top), ch))
+        if len(top) > borne_retenus:
+            top.pop()  # évince le moins bon (fin de liste triée)
+
     prefixes_explores = 0
 
-    def _fabriquer(lemmes: list, scores: list, raisons: list,
-                   squelette: str) -> Chemin:
+    def _fabriquer(lemmes: list, scores: list, raisons: list) -> Chemin:
+        # SANS squelette : sa génération (regex, substitutions) est différée
+        # aux seuls retenus finaux — elle n'est jamais sortie que pour eux.
         phis = [phi_par_nom[_nom_lean(d)] for d in lemmes]
         cout = cout_chemin(phis, phibar)
         raisons_ch = list(raisons)
@@ -826,7 +980,7 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
             f"(Φ(S)={phi_s}, n_max={n_max}, Φ̄={phibar:.1f})")
         return Chemin(lemmes=lemmes, noms=[d.nom for d in lemmes],
                       cout=cout, score=float(sum(scores)),
-                      raisons=raisons_ch, squelette=squelette)
+                      raisons=raisons_ch)
 
     # n = 1 : régime mono-source historique, filtré par le budget.
     # Un « chemin » de longueur 1 doit ATTEINDRE le but (conclusion
@@ -836,16 +990,18 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
         if not _connecte_but(d, tete_sorry, types_sorry, concl_sorry):
             continue
         if cout_chemin([phi_par_nom[_nom_lean(d)]], phibar) <= budget:
-            admissibles.append(_fabriquer(
-                [d], [score], list(raisons),
-                _squelette_mono(d, ctx["noms_sorry"])))
+            _retenir(_fabriquer([d], [score], list(raisons)))
 
     # n ≥ 2 : chaînage avant par coût croissant, élagué par le budget.
     # Chaque préfixe exploré satisfait déjà C(préfixe) ≤ B(S) : la recherche
     # elle-même est bornée, pas filtrée après coup. `max_prefixes` borne
     # en plus le TRAVAIL (R4) : la file étant ordonnée par coût croissant,
     # les préfixes au-delà de la borne sont les plus chers — les arrêter
-    # ne sacrifie que la queue exhaustive.
+    # ne sacrifie que la queue exhaustive. `cap_file` borne la MÉMOIRE de
+    # la file (B6) : au-delà, on ne garde que la moitié la moins chère
+    # (même justification honnête), signalé par `file_bornee`.
+    cap_file = 2 * max_prefixes
+    file_bornee = False
     file = []  # (cout, -score, compteur, préfixe, frontière)
     compteur = itertools.count()
     vus = set()
@@ -891,13 +1047,11 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
             if _connecte_but(d, tete_sorry, types_sorry, concl_sorry):
                 # Chemin complet : enregistré (et prolongeable : une
                 # complétion peut être le préfixe d'une autre).
-                ch = _fabriquer(
+                _retenir(_fabriquer(
                     lemmes2, scores2,
                     [r for _, _, rs in prefixe for r in rs] + list(raisons)
                     + ["chaînage : " + " → ".join(
-                        x.nom for x in lemmes2)],
-                    _squelette_chaine(lemmes2, lieurs_sorry))
-                admissibles.append(ch)
+                        x.nom for x in lemmes2)]))
             sig = tuple(_nom_lean(x) for x in lemmes2)
             if sig in vus:
                 continue
@@ -907,11 +1061,26 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
             heapq.heappush(
                 file, (c2, -sum(scores2), next(compteur),
                        prefixe + [(d, score, list(raisons))], front2))
+            if len(file) > cap_file:
+                # B6 : la file elle-même est plafonnée (R4 mémoire). La file
+                # étant ordonnée par coût croissant, ne garder que la moitié
+                # la moins chère ne sacrifie que les préfixes inexplorés les
+                # plus chers — même justification honnête que max_prefixes.
+                file = heapq.nsmallest(cap_file // 2, file)
+                heapq.heapify(file)
+                file_bornee = True
 
-    admissibles.sort(key=lambda ch: (-ch.score, ch.cout, ch.noms))
-    total = len(admissibles)
-    choix = admissibles[:max_candidats] if max_candidats else admissibles
-    if not admissibles:
+    # `top` est déjà trié par (-score, cout, noms) : les retenus finaux.
+    # Les squelettes ne sont générés QUE pour eux (jamais sortis sinon).
+    for _, _, ch in top:
+        if len(ch.lemmes) == 1:
+            ch.squelette = _squelette_mono(ch.lemmes[0], ctx["noms_sorry"])
+        else:
+            ch.squelette = _squelette_chaine(ch.lemmes, lieurs_sorry)
+    choix = [ch for _, _, ch in top]
+    total = admissibles_total
+    tronques = total > len(choix)
+    if not choix:
         return {
             "statut": "INDÉCIDÉ",
             "a_priori": True,
@@ -924,6 +1093,7 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
             "prefixes_explores": prefixes_explores,
             "recherche_bornee": recherche_bornee,
             "borne_prefixes": max_prefixes,
+            "file_bornee": file_bornee,
             "chemins": [],
             "admissibles_total": 0,
         }
@@ -938,7 +1108,10 @@ def chemins(sorry: str, dossier: str, chemin_registre: str | None = None,
         "prefixes_explores": prefixes_explores,
         "recherche_bornee": recherche_bornee,
         "borne_prefixes": max_prefixes,
+        "file_bornee": file_bornee,
         "admissibles_total": total,
+        "admissibles_tronques": tronques,
+        "chemins_retenus": len(choix),
         "chemins": [
             {"noms": ch.noms,
              "longueur": len(ch.noms),
