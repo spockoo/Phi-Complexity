@@ -21,7 +21,7 @@ Unlike `pylint` (cultural rules) or `radon` (McCabe metrics), `phi-complexity` a
 pip install git+https://github.com/spockoo/Phi-Complexity.git
 ```
 
-> Note : le paquet publié sur PyPI (0.2.3) date d'avant le nettoyage d'octobre 2026 et ne correspond plus à cet arbre — installez depuis GitHub.
+> Note : le paquet est aussi sur PyPI (`pip install phi-complexity`, 0.12.0) — identique à cet arbre depuis le 2026-10-01.
 
 ```bash
 # Audit a file
@@ -235,4 +235,4 @@ MIT — Tomy Verreault, 2026
   - **Durcissement** : l'instrument échoue bruyamment (`INSTRUMENT DÉGRADÉ`, exit 3) au lieu de mentir quand l'analyseur manque ; `phi snapshot` refuse une baseline dégradée sans `--force`.
   - 386 tests verts, multi-langages (Python natif + tree-sitter générique).
 
-> Note d'honnêteté : les numéros 0.1.x–0.2.x publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01. Le PyPI (0.2.3) est obsolète — voir l'installation depuis GitHub ci-dessus. L'historique fiable commence à v0.11.0.
+> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.12.0, identique à cet arbre. L'historique fiable commence à v0.11.0.
