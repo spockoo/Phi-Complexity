@@ -184,6 +184,8 @@ phi_complexity/
 ├── sondes.py             ← A/B probes (closure / obstruction poles)
 ├── piste_sorry.py        ← Rigorous sorry inventory + import graph (Lean 4)
 ├── chemins_verifiables.py← Guided wiring candidates Lean formally decides
+├── parseur_lean.py       ← Robust Lean parser (regex-based, no size limit)
+├── dependances.py        ← Lean dependency graph (exact deps, transitive closure)
 ├── entropie.py           ← Entropy lens (H, ΔH, EFT bounds)
 ├── oracle.py             ← Exhibited reasoning traces
 ├── explorateur.py        ← Interactive explorer
@@ -223,6 +225,11 @@ MIT — Tomy Verreault, 2026
 *Anchored in the Bibliothèque Céleste — Morphic Phi Framework (φ-Meta)*
 
 ## 📜 Historique des Versions (Changelog)
+
+- **v0.13.0 (Extraction robuste)** :
+  - **Nouveau `phi_complexity/dependances.py`** : graphe de dépendances Lean — extraction exacte (fermeture transitive, tri topologique). Élimine le danger d'oubli d'une dépendance.
+  - **Nouveau `extraire_declarations_robuste()`** dans `parseur_lean.py` : extraction par regex, pas de limite de taille. Corrige l'échec silencieux de tree-sitter sur fichiers >5000 lignes (147 → 196 déclarations).
+  - **Corrigé** : extraction du corps par délimitation exacte (entre deux déclarations) au lieu de l'heuristique 50 lignes.
 
 - **v0.12.0 (Chemins vérifiables)** :
   - **Nouveau `phi piste-sorry`** : piste d'un sorry Lean 4 — inventaire rigoureux (commentaires/chaînes exclus), graphe d'imports, chantiers du registre.
