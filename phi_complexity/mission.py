@@ -177,6 +177,21 @@ JUSTIFICATIONS = {
                "DÉGRADATION DÉTECTÉE / INSTRUMENT DÉGRADÉ).",
         "sert": "tous",
     },
+    "dependances": {
+        "but": "Graphe de dépendances Lean : extraction exacte des "
+               "dépendances entre définitions (fermeture transitive, tri "
+               "topologique). Élimine le danger d'oubli d'une dépendance "
+               "lors de l'extraction d'un module — chaque lemme porte "
+               "ses dépendances exactes, vérifiées mécaniquement.",
+        "sert": "instrument",
+    },
+    "parseur_lean": {
+        "but": "Parseur Lean robuste : extrait les 196 déclarations d'un "
+               "fichier de toute taille par regex (pas de limite tree-sitter). "
+               "Corrige l'échec silencieux sur fichiers >5000 lignes — "
+               "l'instrument voit tout, il ne rate rien.",
+        "sert": "instrument",
+    },
 }
 
 
