@@ -223,8 +223,11 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
 
     Retourne le diff complet avec `verdict` typé en tête :
     "STABLE" (aucune dégradation) ou "DÉGRADATION DÉTECTÉE" (+ signaux).
-    Les dérives informatives (gains, réparations, nouvelles arêtes)
-    ne font jamais basculer le verdict.
+    Les dérives informatives (gains propres, réparations, nouvelles arêtes)
+    ne font jamais basculer le verdict. En revanche, un trou dans un
+    NOUVEAU symbole est un signal dur (durcissement 2026-10-02) : une
+    affirmation non vérifiée qui apparaît, même dans du code neuf,
+    est une dégradation de l'état de preuve.
     """
     dossier_abs = os.path.normpath(os.path.abspath(dossier_courant))
     avertissements: List[str] = []
@@ -298,6 +301,12 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
         fiche["est_trou"] = bool(cur_syms[c]["sorry_present"])
         symboles_gagnes.append(fiche)
 
+    # — Durcissement 2026-10-02 : un trou dans un NOUVEAU symbole est un
+    # signal dur, pas une simple information de gain. Une affirmation non
+    # vérifiée qui apparaît est une dégradation de l'état de preuve,
+    # qu'elle soit dans du code neuf ou existant.
+    trous_nouveaux_symboles = [s for s in symboles_gagnes if s["est_trou"]]
+
     nouveaux_trous = []
     trous_repares = []
     for cle in sorted(communes):
@@ -370,6 +379,10 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
     signaux = []
     if nouveaux_trous:
         signaux.append(f"{len(nouveaux_trous)} nouveau(x) trou(s)")
+    if trous_nouveaux_symboles:
+        signaux.append(
+            f"{len(trous_nouveaux_symboles)} nouveau(x) trou(s) "
+            f"dans de nouveaux symboles")
     if symboles_perdus:
         signaux.append(f"{len(symboles_perdus)} symbole(s) perdu(s)")
     if aretes_cassees:
@@ -392,6 +405,7 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
         "version_courante": VERSION,
         "md5_reference": ref.get("md5_carte"),
         "nouveaux_trous": nouveaux_trous,
+        "trous_nouveaux_symboles": trous_nouveaux_symboles,
         "trous_repares": trous_repares,
         "symboles_perdus": symboles_perdus,
         "symboles_gagnes": symboles_gagnes,
@@ -454,6 +468,12 @@ def veille_console(diff: dict) -> str:
             "NOUVEAUX TROUS", diff["nouveaux_trous"],
             lambda s: f"{s['fichier']}:{s['ligne']} — {s['nom']} "
                       f"(postérieur {s['posterior']})")
+    if diff.get("trous_nouveaux_symboles"):
+        lignes += _section_console(
+            "NOUVEAUX TROUS DANS DE NOUVEAUX SYMBOLES",
+            diff["trous_nouveaux_symboles"],
+            lambda s: f"{s['fichier']}:{s['ligne']} — {s['nom']} "
+                      f"(postérieur {s['posterior']})")
     if diff["symboles_perdus"]:
         lignes += _section_console(
             "SYMBOLES PERDUS ⚠️", diff["symboles_perdus"],
@@ -489,7 +509,8 @@ def veille_console(diff: dict) -> str:
         lignes.append(f"  Symboles gagnés (informatif) : "
                       f"{len(diff['symboles_gagnes'])} "
                       f"(dont {n_trous} avec trou)")
-    if not any([diff["nouveaux_trous"], diff["symboles_perdus"],
+    if not any([diff["nouveaux_trous"], diff.get("trous_nouveaux_symboles"),
+                diff["symboles_perdus"],
                 diff["aretes_cassees"], diff["renommage_probable"],
                 diff["trous_repares"], diff["derive_couplage"],
                 diff["derive_posterieure"], diff["symboles_gagnes"],
