@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phi-complexity"
-version = "0.14.1"
+version = "0.14.2"
 description = "Multi-language code quality metrics based on Golden Ratio (φ) mathematical invariants and adiabatic equilibrium"
 readme = "README.md"
 license = {text = "MIT"}
