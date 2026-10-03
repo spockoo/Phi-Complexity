@@ -21,8 +21,8 @@ Unlike `pylint` (cultural rules) or `radon` (McCabe metrics), `phi-complexity` a
 pip install git+https://github.com/spockoo/Phi-Complexity.git
 ```
 
-> Note : le paquet est aussi sur PyPI (`pip install phi-complexity`, 0.14.0).
-> Nouveauté 0.14.0 : parseur Lean 4 autonome (stdlib uniquement, zéro dépendance
+> Note : le paquet est aussi sur PyPI (`pip install phi-complexity`, 0.14.1).
+> Nouveauté 0.14.1 : parseur Lean 4 autonome (stdlib uniquement, zéro dépendance
 > externe) — l'analyse Lean ne nécessite plus tree-sitter ; durcissement de
 > l'extraction (la veille ne devient plus aveugle en silence).
 

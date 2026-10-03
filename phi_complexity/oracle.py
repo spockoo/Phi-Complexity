@@ -1,5 +1,5 @@
 """
-oracle.py — Traces d'oracle pour phi-complexity (v0.14.0, opt-in EFT).
+oracle.py — Traces d'oracle pour phi-complexity (v0.14.1, opt-in EFT).
 
 Un oracle n'est pas un devin : c'est une chaîne de raisonnement EXHIBÉE.
 Chaque mise à jour de croyance enregistre :

@@ -1,5 +1,5 @@
 """
-eft.py — Error-Free Transformations pour phi-complexity (v0.14.0, opt-in).
+eft.py — Error-Free Transformations pour phi-complexity (v0.14.1, opt-in).
 
 Références mathématiques :
 - T. Dekker, « A floating-point technique for extending the available
