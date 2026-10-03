@@ -121,8 +121,12 @@ def analyseur_disponible(chemin: str, langage: Optional[str] = None) -> bool:
         return False
     if lang == "python":
         return True
+    if lang == "lean":
+        # Parseur autonome (stdlib uniquement, 2026-10-03) : Lean est
+        # toujours analysable, sans aucune dépendance externe.
+        return True
     ext = os.path.splitext(chemin)[1].lower()
-    if ext in EXTENSIONS_ANALYSEUR_DEDIE or lang == "lean":
+    if ext in EXTENSIONS_ANALYSEUR_DEDIE:
         # Analyseur dédié : le pack seul ne suffit pas, il faut la grammaire.
         return treesitter_disponible() and _grammaire_lean_ok()
     return treesitter_disponible()
@@ -150,13 +154,15 @@ def obtenir_analyseur(fichier: str, langage: Optional[str] = None) -> AnalyseurB
 
     ext = os.path.splitext(fichier)[1].lower()
     if ext in EXTENSIONS_ANALYSEUR_DEDIE or lang == "lean":
-        if not treesitter_disponible() or not _grammaire_lean_ok():
-            raise ImportError(
-                "Analyse Lean non supportée : grammaire lean indisponible "
-                "(installez `pip install phi-complexity[multilang]` et vérifiez "
-                "l'accès réseau pour le téléchargement de la grammaire)."
-            )
+        # Lean : parseur autonome par défaut (zéro dépendance externe).
+        # Le moteur tree_sitter reste disponible en vérification croisée
+        # optionnelle : AnalyseurLean(fichier, moteur="tree_sitter").
         return _analyseur_dedie(ext)(fichier)
 
+    if not treesitter_disponible():
+        raise ImportError(
+            "Analyse non supportée : `tree-sitter-language-pack` indisponible "
+            "(installez `pip install phi-complexity[multilang]`)."
+        )
     from .treesitter_generic import AnalyseurTreeSitter
     return AnalyseurTreeSitter(fichier, ts_langage=lang)

@@ -143,6 +143,14 @@ JUSTIFICATIONS = {
                "croyance montre sa chaîne, pas de boîte noire.",
         "sert": "instrument",
     },
+    "parseur_autonome": {
+        "but": "Parseur Lean 4 proprietaire de phi-complexity (stdlib "
+               "uniquement, zero dependance externe) : lexer + descente "
+               "recursive sur les en-tetes + delimitation exacte des corps. "
+               "Remplace tree-sitter sur tout le chemin Lean depuis "
+               "l'autonomie stricte du 2026-10-03.",
+        "sert": "instrument",
+    },
     "piste_sorry": {
         "but": "Piste d'un sorry à travers Lean 4 : inventaire rigoureux "
                "(commentaires et chaînes exclus), graphe d'imports, chantiers "

@@ -36,10 +36,10 @@ CODE_SIMPLE = textwrap.dedent('''
 def projet_piege(tmp_path, monkeypatch):
     """Projet avec pièges : dépendances, caches, fichiers non supportés.
 
-    Simule l'environnement CI v0.6.1 (pack tree-sitter absent) : le
-    `modele.lean` reste un leurre « non supporté ». Sans cela, un pack
-    installé rendrait le .lean indexable et fausserait les comptes —
-    ce qui testerait l'environnement, pas les exclusions.
+    Autonomie stricte (2026-10-03) : le `modele.lean` est TOUJOURS
+    indexable (parseur autonome, zéro dépendance externe) — même avec
+    le pack tree-sitter absent. Le monkeypatch ci-dessous le prouve
+    au lieu de simuler un leurre.
     """
     monkeypatch.setattr(registre, "treesitter_disponible", lambda: False)
     (tmp_path / "src").mkdir()
@@ -61,8 +61,9 @@ class TestExclusions:
     def test_exclusions_par_defaut(self, projet_piege):
         """Par défaut : .lake/, __pycache__/, node_modules/, *.egg-info/ ignorés."""
         index = indexer_projet(projet_piege)
-        assert len(index) == 1
-        assert list(index)[0].endswith("src/a.py")
+        assert len(index) == 2
+        assert any(p.endswith("src/a.py") for p in index)
+        assert any(p.endswith("modele.lean") for p in index)
 
     def test_no_exclude_indexe_tout(self, projet_piege):
         """exclusions=[] : les dépendances sont indexées (choix explicite)."""
@@ -76,7 +77,8 @@ class TestExclusions:
         """Une exclusion explicite s'ajoute aux défauts."""
         index = indexer_projet(projet_piege,
                                exclusions=list(EXCLUSIONS_DEFAUT) + ["src"])
-        assert index == {}
+        assert len(index) == 1
+        assert list(index)[0].endswith("modele.lean")
 
     def test_exclusions_dans_non_supportes(self, projet_piege):
         """Les fichiers exclus n'apparaissent pas non plus en non-supportés."""
@@ -87,16 +89,16 @@ class TestExclusions:
 
 class TestNonSupportes:
     def test_champ_present_et_correct(self, projet_piege, monkeypatch):
-        """non_supportes : .txt (extension inconnue), .lean (tree-sitter manquant)."""
+        """Autonomie stricte (2026-10-03) : même sans tree-sitter, le .lean
+        est supporté (parseur autonome) — seul le .txt reste non supporté."""
         monkeypatch.setattr(registre, "treesitter_disponible", lambda: False)
         carte = carte_projet(projet_piege)
         par_fichier = {e["fichier"]: e for e in carte["non_supportes"]}
         txt = next(f for f in par_fichier if f.endswith("notes.txt"))
-        lean = next(f for f in par_fichier if f.endswith("modele.lean"))
         assert par_fichier[txt]["extension"] == ".txt"
         assert par_fichier[txt]["raison"] == "extension inconnue"
-        assert par_fichier[lean]["extension"] == ".lean"
-        assert par_fichier[lean]["raison"] == "tree-sitter manquant"
+        assert not any(f.endswith("modele.lean") for f in par_fichier), (
+            "le .lean ne doit plus être déclaré non supporté")
 
     def test_non_supportes_vide_quand_lang_force(self, projet_piege, monkeypatch):
         """Langage forcé : l'utilisateur assume, rien n'est déclaré non supporté."""

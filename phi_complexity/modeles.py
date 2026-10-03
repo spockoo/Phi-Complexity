@@ -17,6 +17,9 @@ class MetriqueFonction:
     profondeur_max: int   # Imbrication maximale
     distance_fib: float   # Éloignement de la séquence naturelle
     phi_ratio: float      # Rapport complexité/moyenne (idéal: φ)
+    extraction: str = "analyseur"  # "analyseur" ou "robuste_repli"
+    # (durcissement 2026-10-02 : symboles récupérés par l'extracteur
+    # robuste quand tree-sitter les a avalés — métriques = proxy lignes)
 
 
 @dataclass
