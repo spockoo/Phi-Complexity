@@ -167,6 +167,62 @@ Exemples :
                              "ajoute la borne d'erreur certifiée à chaque trace")
     oracle.add_argument("--top", type=int, default=10,
                         help="Taille de la liste « attaquer en premier » (dossiers)")
+
+    radar = subparsers.add_parser("radar",
+                                  help="Témoin : vue du mouvement structurel "
+                                       "entre deux états (faits uniquement, "
+                                       "jamais de verdict)")
+    radar.add_argument("--avant", required=True,
+                       help="État avant : dossier ou fichier .lean")
+    radar.add_argument("--apres", required=True,
+                       help="État après : dossier ou fichier .lean")
+    radar.add_argument("--format", choices=["console", "json"],
+                       default="console",
+                       help="Format de sortie (console lisible, ou json "
+                            "pour les agents/jq)")
+    radar.add_argument("--inclure-hors-chaine", action="store_true",
+                       help="Inclure hors_chaine_clay/ dans la détection de "
+                            "doublons (exclu par défaut : déclaré hors de la "
+                            "chaîne Clay)")
+
+    sismique = subparsers.add_parser("sismique",
+                                     help="Témoin : mémoire des rythmes via "
+                                          "l'historique git (faits uniquement, "
+                                          "jamais de verdict)")
+    sismique.add_argument("--depuis", required=True,
+                          help="Borne de départ : date AAAA-MM-JJ ou ISO")
+    sismique.add_argument("--depot", default=".",
+                          help="Dépôt git à analyser (défaut : répertoire courant)")
+    sismique.add_argument("--format", choices=["console", "json"],
+                          default="console",
+                          help="Format de sortie (console lisible, ou json "
+                               "pour les agents/jq)")
+
+    consigner_cmd = subparsers.add_parser("consigner",
+                                          help="Consigner une décision humaine "
+                                               "de veto sur une observation "
+                                               "(saisie manuelle)")
+    consigner_cmd.add_argument("--kind", required=True,
+                               help="Kind de l'observation (radar)")
+    consigner_cmd.add_argument("--fichier", required=True)
+    consigner_cmd.add_argument("--ligne", type=int, required=True)
+    consigner_cmd.add_argument("--nom", required=True)
+    consigner_cmd.add_argument("--veto", required=True,
+                               choices=["oui", "non"],
+                               help="Veto exercé ou non (décision humaine)")
+    consigner_cmd.add_argument("--motif", required=True,
+                               help="Motif de la décision (≥10 caractères)")
+    consigner_cmd.add_argument("--registre", default=None,
+                               help="Fichier registre (défaut : "
+                                    "~/.phi-complexity-registre-observations.json)")
+
+    registre_cmd = subparsers.add_parser("registre",
+                                         help="Lister les décisions de veto "
+                                              "consignées")
+    registre_cmd.add_argument("--registre", default=None,
+                              help="Fichier registre (défaut : "
+                                   "~/.phi-complexity-registre-observations.json)")
+
     sonde = subparsers.add_parser("sonde",
                                   help="Sondes A/B : tracer l'inconditionnel à "
                                        "partir du conditionnel (pôle fermeture / "
@@ -1238,6 +1294,20 @@ def main():
         # L'oracle interroge un fichier OU un dossier : court-circuit
         # avant la collecte de fichiers.
         sys.exit(_executer_oracle(args))
+
+    if args.commande == "radar":
+        # Le radar compare deux états : court-circuit avant la collecte.
+        sys.exit(_executer_radar(args))
+
+    if args.commande == "sismique":
+        # La sismique lit l'historique git : court-circuit avant la collecte.
+        sys.exit(_executer_sismique(args))
+
+    if args.commande == "consigner":
+        sys.exit(_executer_consigner(args))
+
+    if args.commande == "registre":
+        sys.exit(_executer_registre(args))
 
     if args.commande == "sonde":
         # La sonde lit le registre vivant : court-circuit avant la collecte.

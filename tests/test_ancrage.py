@@ -312,7 +312,7 @@ class TestInterdictionEtStabilite:
         assert list(_parcourir_hors_entropie(sonde_ancree.vers_dict())) == []
 
     def test_version_non_bumpee(self):
-        assert VERSION == "0.14.2"
+        assert VERSION == "0.15.0"
 
     def test_changelog_entree_ancrage(self):
         chemin = os.path.join(os.path.dirname(os.path.dirname(__file__)),
