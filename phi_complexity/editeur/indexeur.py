@@ -71,6 +71,9 @@ class Symbole:
     complexite: int
     langage: str
     fichier: str
+    extraction: str = "analyseur"  # "analyseur" ou "robuste_repli"
+    # (durcissement 2026-10-02 : repli robuste Lean quand tree-sitter
+    # a avalé la déclaration — métriques = proxy lignes)
 
 
 # Cache d'invalidation : (chemin, complet) -> mtime de la dernière
@@ -103,6 +106,7 @@ def _symboles_du_fichier(chemin: str, langage: Optional[str] = None,
                     complexite=int(f.complexite),
                     langage=resultat.langage,
                     fichier=chemin,
+                    extraction=getattr(f, "extraction", "analyseur"),
                 )
             )
         except Exception:

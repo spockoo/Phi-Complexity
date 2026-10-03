@@ -1,5 +1,54 @@
 # Changelog
 
+## [Unreleased] — Durcissement extraction + parseur Lean autonome (2026-10-03)
+
+Portage ordonné par Tomy des trois chantiers vérifiés sur la branche de
+travail : (1) la veille ne devient plus aveugle, (2) verrouillage « zéro
+tree-sitter silencieux », (3) parseur Lean 4 proprietaire (autonomie stricte).
+
+**Cause racine** : la grammaire `tree-sitter-lean` (paquet externe, hors de
+notre contrôle) confond les barres `|expr|` (valeur absolue / norme) **en
+position de type de retour** avec une alternative de filtrage `|` → nœud
+ERROR qui avale toutes les déclarations suivantes, **silencieusement**
+(mesuré : 412 déclarations manquées dans 60/176 fichiers d'un dépôt Lean
+réel). On ne répare pas la grammaire externe : on la neutralise, puis on
+la remplace.
+
+**1. La veille ne devient plus aveugle** : l'existence des symboles vient
+désormais d'un extracteur proprietaire ; toute divergence ≥ 1 symbole entre
+extracteurs déclenche une section console bruyante « ⚠️ EXTRACTION
+DÉGRADÉE » + clé JSON `extraction_repli` (le verdict ne bascule pas : la
+comparaison reste valide). Le durcissement « nouveau symbole troué »
+(#236) couvre désormais aussi les zones ex-aveugles.
+
+**2. Verrouillage « zéro tree-sitter silencieux »** : audit exhaustif des
+sites d'appel tree-sitter — chacun est verrouillé (extracteur proprietaire
+source de vérité, ou échec bruyant explicite). `REGISTRE_TREE_SITTER.md`
+(registre des sites + garantie exacte + limites assumées). Garde
+automatique : `tests/test_zero_treesitter_silencieux.py` fait échouer tout
+nouveau site non enregistré.
+
+**3. Parseur Lean 4 autonome** (`phi_complexity/parseur_autonome.py`,
+~830 lignes, stdlib uniquement, zéro dépendance externe) : lexer +
+descente récursive sur les en-têtes Lean 4 + délimitation exacte des corps ;
+tout construit non reconnu → avertissement avec ligne, jamais de silence.
+Mesuré sur 248 fichiers : 5377 déclarations, 0 perdue, les ~570 manquées
+par tree-sitter toutes trouvées. Source unique sur tout le chemin Lean
+(`AnalyseurLean` moteur `"autonome"` par défaut) ; tree-sitter relégué en
+vérification croisée optionnelle.
+
+**Changement de contrat assumé** : Lean ne dépend plus de tree-sitter —
+l'incident du 2026-09-30 (fausse dégradation après effacement du pack)
+ne peut plus se reproduire pour Lean. Les tests au contrat obsolète ont
+été mis à jour (`test_lean.py`, `test_durcissement.py`,
+`test_durcissement_20261001.py`) ; le chemin « arrière-plan perdu »
+reste couvert via un langage encore dépendant de tree-sitter.
+
+**Écarts de portage assumés** : les modules v110 absents du public
+(`protocole_lean`, `dualite`, `synthese_locale`, `visualisation_ast`,
+`godel_fourier`, `indexeur_lemmes`) n'ont pas d'équivalent public — leurs
+verrouillages ne sont pas portés (documenté dans `REGISTRE_TREE_SITTER.md`).
+
 ## [Unreleased] — Audit 2026-10-01 : fail-loud complété + garde anti-divergence
 
 Chantier ordonné par Tomy (2026-10-01) : auditer phi-complexity, tests

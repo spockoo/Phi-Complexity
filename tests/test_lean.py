@@ -144,8 +144,11 @@ def test_analyseur_disponible_lean():
     assert analyseur_disponible("/tmp/faux.lean") is True
 
 
-def test_grammaire_indisponible_signal_honnete(monkeypatch):
-    """Sans la grammaire : ImportError explicite, jamais de silence."""
+def test_grammaire_indisponible_plus_bloquant_pour_lean(monkeypatch):
+    """Autonomie stricte (2026-10-03) : Lean ne dépend plus de la grammaire
+    tree-sitter. Même sans grammaire ni réseau, l'analyseur Lean est
+    fourni (parseur autonome, stdlib) — jamais d'ImportError, jamais de
+    silence."""
     import phi_complexity.langs.lean as lean_mod
     monkeypatch.setitem(lean_mod._GRAMMAIRE_CACHE, "ok", False)
     monkeypatch.setattr(
@@ -153,5 +156,8 @@ def test_grammaire_indisponible_signal_honnete(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("pas de réseau")),
     )
     assert lean_mod.grammaire_lean_disponible() is False
-    with pytest.raises(ImportError, match="[Ll]ean"):
-        obtenir_analyseur("/tmp/faux.lean")
+    analyseur = obtenir_analyseur("/tmp/faux.lean")
+    assert type(analyseur).__name__ == "AnalyseurLean"
+    assert getattr(analyseur, "moteur", None) == "autonome"
+
+

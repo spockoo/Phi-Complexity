@@ -41,6 +41,14 @@ from .base import AnalyseurBase
 # Types de nœuds mot-clé (tels que la grammaire les normalise).
 _TYPES_DECLARATION = {"theorem", "def", "abbrev", "instance", "structure", "inductive"}
 
+# Kinds récupérables par le repli robuste : exactement ceux que
+# l'analyseur compte (mots-clés SOURCE, avant normalisation —
+# `lemma`→theorem et `class`→structure sont normalisés par la grammaire).
+# `example` et `opaque` en sont exclus : le repli répare un angle mort,
+# il n'étend pas le périmètre.
+_KINDS_COMPTES = {"theorem", "lemma", "def", "abbrev", "instance",
+                  "structure", "class", "inductive"}
+
 # Enfants de `declaration` à sauter avant le mot-clé.
 _PREFIXES_IGNORES = {"decl_modifiers", "attributes"}
 
@@ -76,17 +84,33 @@ class AnalyseurLean(AnalyseurBase):
     """
     Analyseur fractal dédié à Lean 4 : déclarations de tête uniquement,
     métriques calibrées pour le code de preuve.
+
+    Moteur d'extraction (2026-10-03, autonomie stricte) :
+    - "autonome" (défaut) : parseur_autonome (stdlib uniquement, zéro
+      dépendance externe) — source unique sur le chemin Lean ;
+    - "tree_sitter" : ancien chemin tree-sitter, conservé pour vérification
+      croisée optionnelle (désactivé par défaut).
     """
 
-    def __init__(self, fichier: str):
+    def __init__(self, fichier: str, moteur: str = "autonome"):
         super().__init__(fichier)
+        self.moteur = moteur
         self.tree = None
         self.source: bytes = b""
         self.lignes: List[str] = []
         self.resultat = ResultatAnalyse(fichier=fichier, langage="lean")
 
     def charger(self) -> "AnalyseurLean":
-        """Charge et parse le fichier. Lève ImportError explicite si la grammaire manque."""
+        """Charge le fichier. Le moteur autonome ne nécessite rien
+        d'externe ; le moteur tree_sitter lève ImportError explicite si
+        la grammaire manque."""
+        if self.moteur == "autonome":
+            with open(self.fichier, "r", encoding="utf-8", errors="replace") as f:
+                contenu = f.read()
+            self.lignes = contenu.splitlines()
+            self.source = contenu.encode("utf-8", errors="replace")
+            self._contenu = contenu
+            return self
         try:
             from tree_sitter_language_pack import get_parser
         except ImportError as exc:
@@ -113,6 +137,9 @@ class AnalyseurLean(AnalyseurBase):
         """
         Analyse : déclarations de tête, métriques, règles, oudjat.
 
+        Moteur "autonome" (défaut) : parseur proprietaire sans dépendance
+        externe. Moteur "tree_sitter" : ancien chemin (vérification croisée).
+
         `complet=True` : comportement historique. `complet=False`
         (phase 1) : noms, lignes, `complexite = nb_lignes` (PROXY explicite,
         pas le proxy lignes+tactiques du mode complet) ; ni comptage de
@@ -120,6 +147,8 @@ class AnalyseurLean(AnalyseurBase):
         (sentinelles : `profondeur_max=0`, `distance_fib=0.0`,
         `phi_ratio=1.0`). L'oudjat est la déclaration la plus longue.
         """
+        if self.moteur == "autonome":
+            return self._analyser_autonome(complet=complet)
         if self.tree is None:
             self.charger()
         racine = self.tree.root_node
@@ -134,13 +163,88 @@ class AnalyseurLean(AnalyseurBase):
                         self.resultat.nb_classes += 1
             elif enfant.type in _COMMENTAIRES:
                 self.resultat.nb_commentaires += 1
+        # Durcissement 2026-10-02 : repli robuste — récupère les
+        # déclarations avalées par la récupération d'erreur tree-sitter
+        # (cause racine : `|expr|` en position de type, voir _repli_robuste).
+        self._repli_robuste()
         if complet:
             self._regle_fibonacci()
         self._identifier_oudjat(complet=complet)
         return self.resultat
 
     # ────────────────────────────────────────────────────────
-    # EXTRACTION DES DÉCLARATIONS
+    # MOTEUR AUTONOME (2026-10-03, autonomie stricte)
+    # ────────────────────────────────────────────────────────
+
+    def _analyser_autonome(self, complet: bool = True) -> ResultatAnalyse:
+        """Analyse via le parseur autonome (stdlib uniquement).
+
+        Même contrat de sortie que le chemin tree-sitter : symboles
+        comptés = KINDS_COMPTES, complexite = nb_lignes + nb_tactiques
+        (mode complet) ou nb_lignes (phase 1, PROXY explicite).
+        Les avertissements du parseur deviennent des annotations WARNING
+        — jamais silencieux.
+        """
+        from ..parseur_autonome import parse as parse_autonome, KINDS_COMPTES
+        if not hasattr(self, "_contenu"):
+            self.charger()
+        contenu = self._contenu
+        self.resultat.nb_lignes_total = len(self.lignes)
+        res = parse_autonome(contenu)
+        self.resultat.nb_commentaires = res.nb_commentaires
+        for d in res.declarations:
+            if d.kind not in KINDS_COMPTES:
+                continue
+            if d.nom.startswith("_"):
+                continue  # définitions anonymes, comme avant
+            nb_lignes = d.ligne_fin - d.ligne_debut + 1
+            if not complet:
+                mesure = MetriqueFonction(
+                    nom=d.nom,
+                    ligne=d.ligne,
+                    complexite=nb_lignes,  # PROXY phase 1 (voir docstring analyser)
+                    nb_args=0,             # sentinelle : non calculé
+                    nb_lignes=nb_lignes,
+                    profondeur_max=0,      # sentinelle : non calculée
+                    distance_fib=0.0,      # sentinelle : non calculée
+                    phi_ratio=1.0,         # sentinelle : non calculé
+                    extraction="autonome",
+                )
+            else:
+                mesure = MetriqueFonction(
+                    nom=d.nom,
+                    ligne=d.ligne,
+                    complexite=nb_lignes + d.nb_tactiques,
+                    nb_args=d.nb_args,
+                    nb_lignes=nb_lignes,
+                    profondeur_max=d.profondeur_by,
+                    distance_fib=distance_fibonacci(nb_lignes),
+                    phi_ratio=1.0,  # Calculé après, quand la moyenne est connue
+                    extraction="autonome",
+                )
+            self.resultat.fonctions.append(mesure)
+            if d.kind in ("structure", "class", "inductive"):
+                self.resultat.nb_classes += 1
+        # Avertissements du parseur → annotations bruyantes.
+        for av in res.avertissements:
+            extrait = self.lignes[av.ligne - 1].strip() \
+                if 0 < av.ligne <= len(self.lignes) else ""
+            self.resultat.annotations.append(
+                Annotation(
+                    ligne=av.ligne,
+                    message=f"PARSEUR AUTONOME : {av.message}",
+                    niveau="WARNING",
+                    extrait=extrait,
+                    categorie="PARSEUR",
+                )
+            )
+        if complet:
+            self._regle_fibonacci()
+        self._identifier_oudjat(complet=complet)
+        return self.resultat
+
+    # ────────────────────────────────────────────────────────
+    # EXTRACTION DES DÉCLARATIONS (chemin tree_sitter)
     # ────────────────────────────────────────────────────────
 
     def _noeud_mot_cle(self, declaration):
@@ -219,8 +323,85 @@ class AnalyseurLean(AnalyseurBase):
         )
 
     # ────────────────────────────────────────────────────────
-    # MÉTRIQUES SPÉCIFIQUES LEAN
+    # REPLI ROBUSTE (durcissement 2026-10-02)
     # ────────────────────────────────────────────────────────
+
+    def _repli_robuste(self) -> int:
+        """Récupère les déclarations avalées par la récupération d'erreur.
+
+        Cause racine : la grammaire tree-sitter-lean confond les barres
+        `|expr|` (valeur absolue / norme) en position de type de retour
+        avec une alternative de filtrage `|` ; le nœud ERROR produit
+        avale ensuite les déclarations suivantes, qui deviennent
+        INVISIBLES à l'analyseur — silencieusement (constaté :
+        169 déclarations vues sur 261 dans scratch_65c_global.lean,
+        412 déclarations manquées sur 60/176 fichiers du dépôt Lean).
+
+        L'extracteur robuste (regex) est la source de vérité pour
+        l'EXISTENCE des symboles ; tree-sitter garde la main sur les
+        métriques fines quand il voit la déclaration. Les symboles
+        récupérés portent extraction="robuste_repli" et des métriques
+        PROXY honnêtes (complexite = nb_lignes du span, comme la
+        phase 1) — jamais de métriques inventées, jamais de silence.
+
+        Seuls les kinds déjà comptés par l'analyseur sont récupérés
+        (pas de `example`, pas de `opaque`) : le repli ne crée aucun
+        nouveau périmètre, il répare un angle mort.
+
+        Retourne le nombre de symboles récupérés. Le repli ne lève
+        jamais : en cas d'échec il ne fait rien (l'analyse principale
+        reste intacte).
+        """
+        try:
+            from ..parseur_lean import extraire_declarations_robuste
+            code = self.source.decode("utf-8", errors="replace")
+            robustes = sorted(extraire_declarations_robuste(code),
+                              key=lambda d: d.ligne)
+            # Référence de couverture : ce que la passe tree-sitter a
+            # VRAIMENT extrait (self.resultat.fonctions) — et non
+            # extraire_declarations(), qui ignore structure/inductive
+            # alors que l'analyseur les compte (doublons sinon).
+            vus = [(f.nom, f.ligne) for f in self.resultat.fonctions]
+
+            def couvert(d):
+                return any(n == d.nom and abs(l - d.ligne) <= 2
+                           for (n, l) in vus)
+
+            manquants = [
+                d for d in robustes
+                if d.kind in _KINDS_COMPTES and not d.nom.startswith("_")
+                and not couvert(d)
+            ]
+            if not manquants:
+                return 0
+            # Spans : chaque déclaration robuste va jusqu'à la suivante
+            # (tous kinds, comme le découpage par grep de _spans_symboles).
+            lignes_fin = {}
+            for i, d in enumerate(robustes):
+                fin = (robustes[i + 1].ligne - 1
+                       if i + 1 < len(robustes) else len(self.lignes))
+                lignes_fin[(d.nom, d.ligne)] = max(d.ligne, fin)
+            recuperes = 0
+            for d in manquants:
+                fin = lignes_fin.get((d.nom, d.ligne), len(self.lignes))
+                span = max(1, fin - d.ligne + 1)
+                self.resultat.fonctions.append(MetriqueFonction(
+                    nom=d.nom,
+                    ligne=d.ligne,
+                    complexite=span,   # PROXY phase 1, explicite
+                    nb_args=0,         # sentinelle : non calculé
+                    nb_lignes=span,
+                    profondeur_max=0,  # sentinelle : non calculée
+                    distance_fib=distance_fibonacci(span),
+                    phi_ratio=1.0,     # sentinelle : non calculé
+                    extraction="robuste_repli",
+                ))
+                if d.kind in ("structure", "class", "inductive"):
+                    self.resultat.nb_classes += 1
+                recuperes += 1
+            return recuperes
+        except Exception:
+            return 0
 
     def _compter_tactiques(self, declaration) -> int:
         """Nombre de pas de tactique = enfants nommés directs des blocs `by`."""

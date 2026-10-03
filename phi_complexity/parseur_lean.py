@@ -66,6 +66,15 @@ class Declaration:
     a_preuve: bool = False
     texte: str = ""
     ligne: int = 0
+    # Provenance de l'extraction (durcissement « zéro tree-sitter silencieux »,
+    # 2026-10-03) : "analyseur" (tree-sitter) ou "robuste_repli" (regex, quand
+    # tree-sitter a avalé la déclaration — p.ex. `|expr|` en position de type).
+    extraction: str = "analyseur"
+    # Champs du parseur autonome (2026-10-03, autonomie stricte) :
+    # "autonome" quand la déclaration vient de parseur_autonome.
+    ligne_fin: int = 0
+    nb_tactiques: int = 0
+    profondeur_by: int = 0
 
 
 @dataclass
@@ -325,9 +334,14 @@ theorem galerkinEnergy_antitone (K : Nat) (nu : Real) (h : 0 ≤ nu) : True := b
 import re as _re
 
 # Regex pour trouver les déclarations (fonctionne sur fichiers de toute taille)
+# Mots-clés alignés sur ceux que l'analyseur Lean compte
+# (langs/lean.py : theorem/def/abbrev/instance/structure/inductive,
+# avec lemma→theorem et class→structure normalisés par la grammaire).
+# `example` est extrait aussi (utile hors analyseur, ex. dépendances)
+# mais N'EST PAS repris par le repli de l'analyseur.
 _DECL_RE = _re.compile(
-    r'^(?:private\s+)?(?:noncomputable\s+)?'
-    r'(def|theorem|lemma|abbrev|instance|example)\s+'
+    r'^(?:private\s+)?(?:protected\s+)?(?:noncomputable\s+)?'
+    r'(def|theorem|lemma|abbrev|instance|example|structure|class|inductive)\s+'
     r'([A-Za-z_][A-Za-z0-9_\'\.]*|\([^\)]+\))',
     _re.MULTILINE
 )
@@ -343,6 +357,17 @@ def extraire_declarations_robuste(code: str) -> List["Declaration"]:
     Retourne une liste de Declaration avec nom et ligne.
     Les champs détaillés (binders, type) sont laissés vides ;
     utiliser tree-sitter sur le corps extrait pour l'analyse fine.
+
+    Lacunes documentées (2026-10-02, diagnostic `|·|`):
+    - `opaque` n'est pas extrait (l'analyseur Lean ne le compte pas
+      non plus : périmètre identique, pas de divergence artificielle) ;
+    - un mot-clé dans un commentaire de bloc `/- ... -/` (~1 % des cas
+      mesurés sur 176 fichiers) produit un faux positif — le repli de
+      l'analyseur l'accepte comme symbole réel : c'est un coût connu,
+      explicite, pas un silence ;
+    - les déclarations indentées (dans `section`/`namespace`) ne sont
+      pas vues — cohérent avec l'analyseur tree-sitter qui ne balaie
+      que les enfants directs de la racine.
     """
     from .parseur_lean import Declaration  # import local pour éviter cycle
     declarations = []
@@ -354,6 +379,11 @@ def extraire_declarations_robuste(code: str) -> List["Declaration"]:
         nom = nom.strip()
         if nom.startswith('('):
             continue  # instance anonyme, on saute
+        # Un polymorphisme d'univers `foo.{u}` fait capturer le point
+        # traînant (`foo.`) : un identifiant Lean ne finit jamais par `.`.
+        nom = nom.rstrip('.')
+        if not nom:
+            continue
         decl = Declaration(
             nom=nom,
             kind=kind,
@@ -377,3 +407,48 @@ def extraire_corps(code: str, ligne_debut: int, ligne_fin: int = None) -> str:
     debut = max(0, ligne_debut - 1)
     fin = ligne_fin - 1 if ligne_fin else len(lignes)
     return '\n'.join(lignes[debut:fin])
+
+
+def rechercher_declaration(code: str, nom: str) -> "Optional[Declaration]":
+    """Recherche une déclaration par nom — source unique : le parseur
+    autonome (2026-10-03, autonomie stricte ; remplace le couple
+    tree-sitter + repli robuste).
+
+    Retourne None uniquement si la déclaration n'existe vraiment pas —
+    c'est alors une vraie absence, pas un aveuglement.
+    """
+    from .parseur_autonome import rechercher_declaration_autonome
+    return rechercher_declaration_autonome(code, nom)
+
+
+def comparer_extracteurs(code: str, tolerance_ligne: int = 2) -> dict:
+    """Compare le parseur autonome (source unique) à tree-sitter
+    (vérification croisée optionnelle).
+
+    Contexte historique (2026-10-02) : la grammaire tree-sitter-lean
+    confond les barres `|expr|` (valeur absolue/norme) en position de
+    type de retour avec une alternative de filtrage `|` ; le nœud ERROR
+    produit avale ensuite les déclarations suivantes, qui deviennent
+    invisibles à `extraire_declarations` — silencieusement. Depuis
+    2026-10-03, le parseur autonome (stdlib uniquement) est la source
+    de vérité ; tree-sitter n'est plus sur le chemin critique.
+
+    Retourne {"autonome_seuls": [...], "tree_sitter_seuls": [...]} :
+    listes de Declaration vus par un seul des deux extracteurs.
+    Deux déclarations sont appariées si même nom et lignes à
+    `tolerance_ligne` près.
+    """
+    from .parseur_autonome import parse_declarations, vers_declaration
+    decls_auto = [vers_declaration(d) for d in parse_declarations(code)]
+    decls_ts = list(extraire_declarations(code))
+
+    def couvre(candidat, references):
+        return any(
+            r.nom == candidat.nom and abs(r.ligne - candidat.ligne) <= tolerance_ligne
+            for r in references
+        )
+
+    return {
+        "autonome_seuls": [d for d in decls_auto if not couvre(d, decls_ts)],
+        "tree_sitter_seuls": [d for d in decls_ts if not couvre(d, decls_auto)],
+    }

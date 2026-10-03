@@ -142,6 +142,26 @@ def carte_projet(dossier: str, lang: Optional[str] = None,
     non_supportes = fichiers_non_supportes(dossier, exclusions=exclusions,
                                            langage=lang)
     avertissements = _avertissements_backend()
+    # Verrouillage « zéro tree-sitter silencieux » (2026-10-03) : si des
+    # symboles n'existent que grâce au repli robuste (tree-sitter les a
+    # avalés), on le dit explicitement dans les avertissements — la clé
+    # existe déjà, aucun changement de schéma.
+    par_fichier_repli = {}
+    for chemin, symboles in index.items():
+        n = sum(1 for s in symboles
+                if getattr(s, "extraction", "analyseur") == "robuste_repli")
+        if n:
+            par_fichier_repli[os.path.basename(chemin)] = n
+    if par_fichier_repli:
+        total_repli = sum(par_fichier_repli.values())
+        avertissements.append(
+            f"⚠️ EXTRACTION DÉGRADÉE — repli robuste : {total_repli} "
+            f"symbole(s) récupéré(s) dans {len(par_fichier_repli)} "
+            f"fichier(s) (invisibles à tree-sitter, métriques = proxy "
+            f"lignes) : " + ", ".join(
+                f"{f} ({n})" for f, n in sorted(par_fichier_repli.items())))
+    # (docstring : en mode complet, les clés sont EXACTEMENT celles de
+    # v0.7.0 — on n'ajoute AUCUNE clé, on remplit `avertissements`.)
 
     fichiers = []
     radiances = []

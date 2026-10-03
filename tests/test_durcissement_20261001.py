@@ -7,7 +7,9 @@ test_durcissement_sondes.py (2026-09-30, sondes) ne couvraient pas :
 1. `phi veille` rend INSTRUMENT DÉGRADÉ + exit 3 quand l'arrière-plan
    d'analyse est perdu (incident réel du 2026-09-30 : fausse
    « dégradation » 3531 → 33 symboles après un reboot qui avait effacé
-   tree-sitter-language-pack).
+   tree-sitter-language-pack). Depuis l'autonomie stricte (2026-10-03),
+   Lean est immunisé (parseur autonome) : le chemin dégradé est exercé
+   via un langage encore dépendant de tree-sitter (JS dans le fixture).
 2. `phi snapshot` REFUSE une baseline dégradée sans --force (exit 3),
    et l'accepte avec --force (exit 0, en connaissance de cause).
 3. `phi chemins` surface l'avertissement d'arrière-plan (fix d'audit
@@ -29,7 +31,9 @@ import phi_complexity.langs.registry as registre
 
 @pytest.fixture
 def projet_mixte(tmp_path):
-    """Projet minimal avec du Python (natif) et du Lean (tree-sitter)."""
+    """Projet minimal : Python (natif), Lean (autonome depuis 2026-10-03)
+    et JS (encore dépendant de tree-sitter — c'est lui qui exerce le
+    chemin "arrière-plan perdu", le .lean en étant désormais immunisé)."""
     (tmp_path / "a.py").write_text(
         textwrap.dedent("""\
             def alpha(x):
@@ -37,6 +41,8 @@ def projet_mixte(tmp_path):
             """), encoding="utf-8")
     (tmp_path / "b.lean").write_text("def beta : Nat := 42\n",
                                      encoding="utf-8")
+    (tmp_path / "c.js").write_text("function gamma() { return 1; }\n",
+                                   encoding="utf-8")
     return str(tmp_path)
 
 

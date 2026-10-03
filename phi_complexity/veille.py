@@ -54,6 +54,15 @@ SEUIL_DERIVE_POSTERIEUR = 1e-9
 #: Nombre de dérives postérieures rapportées en détail.
 TOP_DERIVES = 12
 
+#: Seuil de divergence entre extracteurs Lean au-delà duquel la veille
+#: le signale explicitement (durcissement 2026-10-02). Vaut 1 : TOUTE
+#: divergence est rapportée — un seuil plus haut réintroduirait du
+#: silence, exactement ce que le durcissement interdit. Le signal ne
+#: fait PAS basculer le verdict (contrairement à INSTRUMENT DÉGRADÉ) :
+#: la comparaison reste valide, seuls les symboles récupérés ont des
+#: métriques proxy (complexité = lignes).
+SEUIL_DIVERGENCE_EXTRACTEURS = 1
+
 
 # ────────────────────────────────────────────────────────
 # SANTÉ DE L'INSTRUMENT (durcissement 2026-10-01)
@@ -203,9 +212,15 @@ def _index_symboles(carte: dict) -> Dict[Tuple[str, str], dict]:
 
     En cas de collision (même nom deux fois dans un fichier — rare),
     la clé est désambiguïsée par la ligne : (fichier, nom, ligne).
+    La désambiguïsation est DÉTERMINISTE : tri par (fichier, ligne)
+    avant indexation, sinon l'ordre de tri (postérieur) ferait diverger
+    les clés entre deux cartes et créerait de faux « perdus »
+    (bug trouvé le 2026-10-03 sur Bibliotheque-Aperiodique-Lean4).
     """
     index: Dict[Tuple[str, str], dict] = {}
-    for s in carte.get("symboles", []):
+    symboles = sorted(carte.get("symboles", []),
+                      key=lambda s: (s["fichier"], s["ligne"]))
+    for s in symboles:
         cle = (s["fichier"], s["nom"])
         if cle in index:
             cle = (s["fichier"], s["nom"], s["ligne"])
@@ -375,6 +390,16 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
     instrument_degrade, causes_instrument = _sante_instrument(
         ref, dossier_courant, exclusions)
 
+    # — Divergence d'extracteurs (durcissement 2026-10-02) : fichiers où
+    # le repli robuste a récupéré des symboles invisibles à tree-sitter
+    # (cause racine : `|expr|` en position de type). Signal EXPLICITE
+    # et bruyant — jamais un silence. Ne fait pas basculer le verdict :
+    # la comparaison reste valide (les symboles récupérés participent
+    # au diff, y compris la détection de trous).
+    extraction_repli = {f: n for f, n in
+                        carte.get("extraction_repli", {}).items()
+                        if n >= SEUIL_DIVERGENCE_EXTRACTEURS}
+
     # — Verdict : seules les dégradations dures le font basculer.
     signaux = []
     if nouveaux_trous:
@@ -416,6 +441,9 @@ def comparer(ref: dict, dossier_courant: str, exclusions=None) -> dict:
         "derive_posterieure": derive_posterieure,
         "nb_symboles_reference": len(ref_syms),
         "nb_symboles_courant": len(cur_syms),
+        # Durcissement 2026-10-02 : {fichier: n} où le repli robuste a
+        # récupéré n symboles invisibles à tree-sitter. Vide = nominal.
+        "extraction_repli": extraction_repli,
     }
 
 
@@ -474,6 +502,22 @@ def veille_console(diff: dict) -> str:
             diff["trous_nouveaux_symboles"],
             lambda s: f"{s['fichier']}:{s['ligne']} — {s['nom']} "
                       f"(postérieur {s['posterior']})")
+    if diff.get("extraction_repli"):
+        # Durcissement 2026-10-02 : la cécité partielle de tree-sitter
+        # (ex. `|expr|` en position de type) est SIGNALÉE, jamais tue.
+        # Les symboles récupérés participent au diff avec des métriques
+        # proxy (complexité = lignes) — la comparaison reste valide.
+        total_recup = sum(diff["extraction_repli"].values())
+        lignes.append(
+            f"  ⚠️  EXTRACTION DÉGRADÉE — repli robuste : "
+            f"{total_recup} symbole(s) récupéré(s) dans "
+            f"{len(diff['extraction_repli'])} fichier(s) "
+            f"(invisibles à tree-sitter, métriques = proxy lignes)")
+        for f in sorted(diff["extraction_repli"])[:15]:
+            lignes.append(f"    • {f} : "
+                          f"{diff['extraction_repli'][f]} symbole(s) récupéré(s)")
+        if len(diff["extraction_repli"]) > 15:
+            lignes.append(f"    … et {len(diff['extraction_repli']) - 15} autres")
     if diff["symboles_perdus"]:
         lignes += _section_console(
             "SYMBOLES PERDUS ⚠️", diff["symboles_perdus"],
@@ -514,6 +558,6 @@ def veille_console(diff: dict) -> str:
                 diff["aretes_cassees"], diff["renommage_probable"],
                 diff["trous_repares"], diff["derive_couplage"],
                 diff["derive_posterieure"], diff["symboles_gagnes"],
-                diff["aretes_nouvelles"]]):
+                diff["aretes_nouvelles"], diff.get("extraction_repli")]):
         lignes.append("  Rien n'a bougé : la structure est identique.")
     return "\n".join(lignes)

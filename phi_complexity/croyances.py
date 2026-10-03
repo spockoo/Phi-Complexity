@@ -577,10 +577,17 @@ def chemins_croyants(dossier: str, lang: Optional[str] = None,
     sorry_modes = set()
 
     croyances: List[CroyanceSymbole] = []
+    # Durcissement 2026-10-02 : par fichier, combien de symboles viennent
+    # du repli robuste (tree-sitter aveugle). Jamais silencieux.
+    extraction_repli: Dict[str, int] = {}
     for f in fichiers:
         c = canon[f]
         rel = os.path.relpath(c, dossier_abs)
         symboles = sorted(index[f], key=lambda s: s.ligne)
+        n_repli = sum(1 for s in symboles
+                      if getattr(s, "extraction", "analyseur") == "robuste_repli")
+        if n_repli:
+            extraction_repli[rel] = n_repli
         sorry_map, mode = _sorry_par_symbole(f, symboles)
         sorry_modes.add(mode)
         if mode == "grep_repli":
@@ -676,6 +683,10 @@ def chemins_croyants(dossier: str, lang: Optional[str] = None,
         "imports_non_resolus": non_resolus[:20],
         "nb_imports_non_resolus": len(non_resolus),
         "limites": LIMITE_HONNETETE,
+        # Durcissement 2026-10-02 : fichiers où le repli robuste a récupéré
+        # des symboles invisibles à tree-sitter ({fichier_rel: n}).
+        # Absent/vide = extraction nominale partout.
+        "extraction_repli": extraction_repli,
     }
     if mode_exact:
         # Clé EFT : uniquement en mode exact (JSON flottant inchangé).

@@ -151,6 +151,25 @@ class AnalyseurTreeSitter(AnalyseurBase):
             self.charger()
         racine = self.tree.root_node
         self.resultat.nb_lignes_total = len(self.lignes)
+        # ────────────────────────────────────────────────────────
+        # VERROUILLAGE « zéro tree-sitter silencieux » (2026-10-03) :
+        # un arbre avec nœuds ERROR signifie récupération d'erreur —
+        # des symboles peuvent manquer SANS aucun signal sinon.
+        # On l'annonce en annotation CRITICAL explicite (jamais de
+        # silence) ; on ne tente pas de réparer la grammaire externe.
+        # ────────────────────────────────────────────────────────
+        try:
+            if racine.has_error:
+                self._annoter(
+                    1,
+                    "⚠️ TREE-SITTER DÉGRADÉ : l'arbre syntaxique contient "
+                    "des nœuds d'erreur — des symboles peuvent manquer "
+                    "silencieusement dans cette analyse.",
+                    "CRITICAL",
+                    "SOUVERAINETE",
+                )
+        except Exception:
+            pass  # la garde ne doit jamais casser l'analyse
         if complet:
             self._compter_elements_globaux(racine)
             self._analyser_fonctions(racine)
