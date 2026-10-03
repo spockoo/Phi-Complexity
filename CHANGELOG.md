@@ -2,8 +2,6 @@
 
 ## [0.14.1] — 2026-10-03 — Durcissement extraction + parseur Lean autonome
 
-(Note : 0.14.0 publiée puis retirée de PyPI le même jour — contenu identique.)
-
 Portage ordonné par Tomy des trois chantiers vérifiés sur la branche de
 travail : (1) la veille ne devient plus aveugle, (2) verrouillage « zéro
 tree-sitter silencieux », (3) parseur Lean 4 proprietaire (autonomie stricte).
