@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.2] — 2026-10-03 — README : historique des versions complété
+
+Correctif d'emballage uniquement — aucun changement de code depuis 0.14.1.
+- README : ajout de l'entrée **v0.14.1 (Parseur Lean autonome)** manquante
+  dans la section « Historique des Versions » (la 0.14.1 avait été publiée
+  avec un README dont l'historique s'arrêtait à v0.13.0 ; la description
+  PyPI étant immuable, cette 0.14.2 la remplace à l'affichage).
+- Note d'honnêteté : PyPI sert désormais la 0.14.2.
+
 ## [0.14.1] — 2026-10-03 — Durcissement extraction + parseur Lean autonome
 
 Portage ordonné par Tomy des trois chantiers vérifiés sur la branche de

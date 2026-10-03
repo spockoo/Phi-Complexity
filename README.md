@@ -229,6 +229,10 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
+- **v0.14.2 (README : historique complété)** :
+  - Correctif d'emballage uniquement — aucun changement de code depuis 0.14.1.
+  - Ajout de l'entrée **v0.14.1 (Parseur Lean autonome)** manquante dans cette section (la 0.14.1 avait été publiée avec un historique s'arrêtant à v0.13.0).
+
 - **v0.14.1 (Parseur Lean autonome)** :
   - **Nouveau `phi_complexity/parseur_autonome.py`** : parseur Lean 4 autonome (~830 lignes, stdlib uniquement, zéro dépendance externe) — lexer + descente récursive sur les en-têtes Lean 4 + délimitation exacte des corps ; tout construit non reconnu → avertissement avec ligne, jamais de silence. Mesuré sur 248 fichiers : 5377 déclarations, 0 perdue, les ~570 manquées par tree-sitter toutes trouvées. Source unique sur le chemin Lean ; tree-sitter relégué en vérification croisée optionnelle.
   - **Verrouillage « zéro tree-sitter silencieux »** : audit exhaustif des sites d'appel tree-sitter — extracteur proprietaire source de vérité, ou échec bruyant explicite (`REGISTRE_TREE_SITTER.md`) ; garde automatique `tests/test_zero_treesitter_silencieux.py` fait échouer tout nouveau site non enregistré.
@@ -251,4 +255,4 @@ MIT — Tomy Verreault, 2026
   - **Durcissement** : l'instrument échoue bruyamment (`INSTRUMENT DÉGRADÉ`, exit 3) au lieu de mentir quand l'analyseur manque ; `phi snapshot` refuse une baseline dégradée sans `--force`.
   - 386 tests verts, multi-langages (Python natif + tree-sitter générique).
 
-> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.14.1, identique à cet arbre. L'historique fiable commence à v0.11.0.
+> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.14.2, identique à cet arbre. L'historique fiable commence à v0.11.0.
