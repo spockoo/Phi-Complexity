@@ -1,5 +1,5 @@
 """
-veille.py — La Veille : moniteur de régression structurelle (v0.12.0).
+veille.py — La Veille : moniteur de régression structurelle (v0.14.0).
 
 Idée (Tomy) : « nous saurons si nous avons déconstruit par manque de
 prudence nos développements » — comparer la carte d'aujourd'hui à une
