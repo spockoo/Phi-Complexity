@@ -229,6 +229,12 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
+- **v0.14.1 (Parseur Lean autonome)** :
+  - **Nouveau `phi_complexity/parseur_autonome.py`** : parseur Lean 4 autonome (~830 lignes, stdlib uniquement, zéro dépendance externe) — lexer + descente récursive sur les en-têtes Lean 4 + délimitation exacte des corps ; tout construit non reconnu → avertissement avec ligne, jamais de silence. Mesuré sur 248 fichiers : 5377 déclarations, 0 perdue, les ~570 manquées par tree-sitter toutes trouvées. Source unique sur le chemin Lean ; tree-sitter relégué en vérification croisée optionnelle.
+  - **Verrouillage « zéro tree-sitter silencieux »** : audit exhaustif des sites d'appel tree-sitter — extracteur proprietaire source de vérité, ou échec bruyant explicite (`REGISTRE_TREE_SITTER.md`) ; garde automatique `tests/test_zero_treesitter_silencieux.py` fait échouer tout nouveau site non enregistré.
+  - **Veille branchée sur extracteur robuste** : toute divergence ≥ 1 symbole entre extracteurs déclenche l'alerte « ⚠️ EXTRACTION DÉGRADÉE » ; le durcissement « nouveau symbole troué » couvre désormais les zones ex-aveugles.
+  - Cause racine : la grammaire `tree-sitter-lean` (paquet externe) confondait les barres `|expr|` en position de type de retour avec une alternative de filtrage → 412 déclarations manquées en silence sur un dépôt réel. On ne répare pas la grammaire externe : on la remplace.
+
 - **v0.13.0 (Extraction robuste)** :
   - **Nouveau `phi_complexity/dependances.py`** : graphe de dépendances Lean — extraction exacte (fermeture transitive, tri topologique). Élimine le danger d'oubli d'une dépendance.
   - **Nouveau `extraire_declarations_robuste()`** dans `parseur_lean.py` : extraction par regex, pas de limite de taille. Corrige l'échec silencieux de tree-sitter sur fichiers >5000 lignes (147 → 196 déclarations).
@@ -245,4 +251,4 @@ MIT — Tomy Verreault, 2026
   - **Durcissement** : l'instrument échoue bruyamment (`INSTRUMENT DÉGRADÉ`, exit 3) au lieu de mentir quand l'analyseur manque ; `phi snapshot` refuse une baseline dégradée sans `--force`.
   - 386 tests verts, multi-langages (Python natif + tree-sitter générique).
 
-> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.12.0, identique à cet arbre. L'historique fiable commence à v0.11.0.
+> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.14.1, identique à cet arbre. L'historique fiable commence à v0.11.0.
