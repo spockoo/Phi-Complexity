@@ -48,7 +48,7 @@ ENTROPIE_CIBLE_NORMALISEE = PHI_INV
 BANDE_TOLERANCE_ADIABATIQUE = ETA_GOLDEN
 """Bande passante de tolérance pour l'entropie relative : η_golden = 1 - φ⁻¹ ≈ 0.381966."""
 
-VERSION = "0.14.2"
+VERSION = "0.15.0"
 AUTEUR = "Tomy Verreault"
 FRAMEWORK = "Morphic Phi Framework (φ-Meta)"
 

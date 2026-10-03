@@ -21,10 +21,10 @@ Unlike `pylint` (cultural rules) or `radon` (McCabe metrics), `phi-complexity` a
 pip install git+https://github.com/spockoo/Phi-Complexity.git
 ```
 
-> Note : le paquet est aussi sur PyPI (`pip install phi-complexity`, 0.14.1).
-> Nouveauté 0.14.1 : parseur Lean 4 autonome (stdlib uniquement, zéro dépendance
-> externe) — l'analyse Lean ne nécessite plus tree-sitter ; durcissement de
-> l'extraction (la veille ne devient plus aveugle en silence).
+> Note : le paquet est aussi sur PyPI (`pip install phi-complexity`, 0.15.0).
+> Nouveauté 0.15.0 : le témoin — `phi radar` (vue du mouvement structurel
+> entre deux états) et `phi sismique` (mémoire des rythmes via l'historique
+> git) + garde constitutionnelle (l'instrument montre, il ne décide jamais).
 
 ```bash
 # Audit a file
@@ -229,6 +229,14 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
+- **v0.15.0 (Le Témoin : radar + sismique)** :
+  - **Nouveau `phi radar --avant S1 --apres S2`** : vue du mouvement structurel entre deux états — 5 détecteurs purement mécaniques (énoncé modifié avec énoncé/corps hashés séparément, preuve effondrée couplée à énoncé qui bouge, nouvel axiome, définition dupliquée, nouveau sorry). Poids de saillance fixes et documentés dans le code, jamais appris. Sortie console + JSON : faits uniquement (fichier, ligne, avant/après), jamais de verdict.
+  - **Nouveau `phi sismique --depuis <date> [--depot]`** : mémoire des rythmes via l'historique git (stdlib uniquement) — fréquence de touches, mécanisme (construction/effondrement/barattage/ajustement), répliques (≥3 touches/24h), profondeur et rayon de propagation via le graphe de dépendances, magnitude, épicentre. Le sismogramme décrit, il ne juge jamais.
+  - **Nouveau `phi consigner` / `phi registre`** : consigne les décisions humaines de veto (observation → exercé/non + motif ≥10 caractères + date, JSON persistant). L'instrument apprend le vocabulaire des situations, jamais la décision.
+  - **Garde constitutionnelle** : `tests/test_garde_non_prescriptif.py` — scan AST des littéraux + scan des sorties réelles contre une liste noire (« veto requis », « dangereux », …) ; tout module émettant du langage prescriptif fait échouer les tests. L'instrument montre, il ne décide jamais.
+  - **Réglage anti-bruit** : `hors_chaine_clay/` exclu par défaut de la détection de doublons (déclaré hors de la chaîne Clay ; `--inclure-hors-chaine` pour le réinclure) ; doublons préexistants repliés en console, détail en JSON.
+  - Registre `mission.py` : justifications « but de mission » ajoutées pour les 3 modules (garde anti-divergence OK).
+
 - **v0.14.2 (README : historique complété)** :
   - Correctif d'emballage uniquement — aucun changement de code depuis 0.14.1.
   - Ajout de l'entrée **v0.14.1 (Parseur Lean autonome)** manquante dans cette section (la 0.14.1 avait été publiée avec un historique s'arrêtant à v0.13.0).
@@ -255,4 +263,4 @@ MIT — Tomy Verreault, 2026
   - **Durcissement** : l'instrument échoue bruyamment (`INSTRUMENT DÉGRADÉ`, exit 3) au lieu de mentir quand l'analyseur manque ; `phi snapshot` refuse une baseline dégradée sans `--force`.
   - 386 tests verts, multi-langages (Python natif + tree-sitter générique).
 
-> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert désormais la 0.14.2, identique à cet arbre. L'historique fiable commence à v0.11.0.
+> Note d'honnêteté : les numéros 0.1.1–0.2.2 publiés avant octobre 2026 couvraient du scaffolding généré par bots, supprimé lors du nettoyage du 2026-10-01 (seule la 0.1.0 a été conservée). PyPI sert la 0.14.2 ; la 0.15.0 (cet arbre) sera publiée sur PyPI après fusion. L'historique fiable commence à v0.11.0.

@@ -158,6 +158,12 @@ JUSTIFICATIONS = {
                "quelle complexité vers la décharge.",
         "sert": "tous",
     },
+    "radar": {
+        "but": "Témoin : vue du mouvement structurel entre deux états "
+               "(énoncé vs preuve, doublons, sorrys, axiomes) — ordonne "
+               "l'attention vers les changements à trier humainement.",
+        "sert": "tous",
+    },
     "chemins_verifiables": {
         "but": "Chemins vérifiables vers un sorry : candidats de câblage "
                "guidés (jamais de source contenant un sorry), chacun identifié "
@@ -172,6 +178,18 @@ JUSTIFICATIONS = {
         "but": "Restitution (console/Markdown) : l'instrument montre, "
                "il n'automatise pas le jugement.",
         "sert": "instrument",
+    },
+    "registre_observations": {
+        "but": "Consigne les décisions humaines de veto (observation → "
+               "décision + motif + date) : l'instrument apprend le "
+               "vocabulaire des situations, jamais la décision.",
+        "sert": "tous",
+    },
+    "sismique": {
+        "but": "Témoin : mémoire des rythmes via l'historique git "
+               "(fréquence, profondeur, mécanisme, répliques) — le "
+               "sismogramme décrit l'agitation, le tri reste humain.",
+        "sert": "tous",
     },
     "sondes": {
         "but": "Sondes A/B : lisent le registre vivant des hypothèses "

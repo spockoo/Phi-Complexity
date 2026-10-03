@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.0] — 2026-10-03 — Le Témoin : radar + sismique
+
+- `phi radar --avant S1 --apres S2` : vue du mouvement structurel entre deux
+  états — 5 détecteurs mécaniques (énoncé modifié, preuve effondrée, nouvel
+  axiome, définition dupliquée, nouveau sorry), poids de saillance fixes,
+  faits uniquement, jamais de verdict.
+- `phi sismique --depuis <date>` : mémoire des rythmes via l'historique git
+  (fréquence, mécanisme, répliques, profondeur, rayon, magnitude, épicentre).
+- `phi consigner` / `phi registre` : consigne les décisions humaines de veto.
+- Garde constitutionnelle `test_garde_non_prescriptif.py` : l'instrument
+  montre, il ne décide jamais.
+- `mission.py` : justifications ajoutées pour les 3 modules.
+
 ## [0.14.2] — 2026-10-03 — README : historique des versions complété
 
 Correctif d'emballage uniquement — aucun changement de code depuis 0.14.1.
