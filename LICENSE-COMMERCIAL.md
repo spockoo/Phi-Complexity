@@ -39,7 +39,8 @@ usage prévu. Réponse sous 7 jours ouvrés.
 
 ## Paiement
 
-Virement bancaire ou PayPal. Une facture est émise à chaque souscription.
+Virement Interac ou virement bancaire. Une facture est émise à chaque
+souscription. (Paiement par carte via Stripe à venir.)
 
 ## Versions concernées
 
