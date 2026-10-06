@@ -232,6 +232,10 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
+- **v0.16.1 (Correctif changelog)** :
+  - Ajout de l'entrée changelog **v0.16.0** manquante dans cette section (la 0.16.0 avait été publiée sans son entrée d'historique).
+  - Aucun changement de code depuis 0.16.0.
+
 - **v0.16.0 (Modules v110 + phi telemetry)** :
   - **Nouveaux modules v110** : `sentinelle` (surveillance des processus longs), `markov` (chaînes de Markov sur transitions d'états), `phiwrite` (écriture assistée des rapports), `carnet` (carnet de bord), `journal` (journal horodaté).
   - **Nouvelles commandes** : `phi markov`, `phi write`, `phi sentinelle`.
