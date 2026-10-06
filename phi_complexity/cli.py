@@ -470,6 +470,21 @@ Exemples :
                                 "doctrine : pas de trou déguisé)")
     write_cmd.set_defaults(commande="write")
 
+    telemetry_cmd = subparsers.add_parser("telemetry",
+                                         help="telemetry : lire l'état interne "
+                                              "de l'exporteur v2 "
+                                              "(export_v2.telemetry.json)")
+    telemetry_cmd.add_argument("--fichier", default=None,
+                               help="Chemin du export_v2.telemetry.json "
+                                    "(défaut : recherche en remontant depuis .)")
+    telemetry_cmd.add_argument("--terrain", default=".",
+                               help="Dossier de départ pour la recherche "
+                                    "du fichier télémétrie")
+    telemetry_cmd.add_argument("--total", type=int, default=208018,
+                               help="Nombre total de déclarations attendu "
+                                    "(pour le %%)")
+    telemetry_cmd.set_defaults(commande="telemetry")
+
     return parser
 
 
@@ -1508,6 +1523,29 @@ def _executer_write(args: argparse.Namespace) -> int:
     return 0
 
 
+def _executer_telemetry(args: argparse.Namespace) -> int:
+    """Exécute 'telemetry' : lit export_v2.telemetry.json et l'affiche.
+
+    L'instrument lit, il n'interprète pas : ce que le JSON dit, c'est
+    ce qu'on affiche. Ordre Tomy (2026-10-06).
+    """
+    from . import telemetry as mod_telemetry
+    chemin = getattr(args, "fichier", None)
+    if not chemin:
+        chemin = mod_telemetry.trouver_telemetry(
+            getattr(args, "terrain", "."))
+    if not chemin:
+        print("❌ export_v2.telemetry.json introuvable "
+              "(cherché depuis %s)" % getattr(args, "terrain", "."))
+        return 1
+    donnees, erreur = mod_telemetry.lire_telemetry(chemin)
+    if erreur:
+        print("❌ %s : %s" % (chemin, erreur))
+        return 1
+    return mod_telemetry.afficher(
+        donnees, chemin, total_attendu=getattr(args, "total", 208018))
+
+
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
@@ -1600,6 +1638,11 @@ def main():
         # phiwrite génère depuis une spec JSON, pas depuis des sources :
         # court-circuit avant la collecte de fichiers.
         sys.exit(_executer_write(args))
+
+    if args.commande == "telemetry":
+        # La télémétrie lit un JSON d'état, pas des sources :
+        # court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_telemetry(args))
 
     fichiers = _collecter_fichiers(args.cible)
     if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):
