@@ -376,6 +376,115 @@ Exemples :
                                "(défaut : explorateur_<mecanisme>.html dans le répertoire courant)")
     explorer.add_argument("--sans-oracle", action="store_true",
                           help="Ne pas indexer les traces d'oracle (génération plus rapide)")
+
+    sentinelle_cmd = subparsers.add_parser("sentinelle",
+                                           help="Survie des missions au "
+                                                "reboot : état structuré, "
+                                                "pulsation, orphelines, "
+                                                "brief de reprise")
+    sentinelle_cmd.add_argument("action",
+                                choices=["init", "checkpoint", "pulse",
+                                         "check", "reprise", "dormants",
+                                         "enchaine"],
+                                help="init : créer l'état d'une mission ; "
+                                     "checkpoint : noter le statut d'un item "
+                                     "(vocabulaire contrôlé) ; pulse : "
+                                     "battement de cœur horodaté ; check : "
+                                     "montrer les missions présumées "
+                                     "orphelines ; reprise : générer le brief "
+                                     "de reprise (ne relance rien) ; "
+                                     "dormants : détecter les agents/items "
+                                     "présumés dormants et générer leur brief "
+                                     "de réveil (ne réveille rien) ; "
+                                     "enchaine : faire avancer une mission "
+                                     "figée vers sa suite naturelle "
+                                     "(vérifie qu'elle est vraiment morte, "
+                                     "chaîne les items, reprend la pulsation)")
+    sentinelle_cmd.add_argument("--terrain", default=".",
+                                help="Terrain de la mission (init/checkpoint/"
+                                     "pulse/reprise ; défaut : .)")
+    sentinelle_cmd.add_argument("--nom", default=None,
+                                help="Nom de la mission (init)")
+    sentinelle_cmd.add_argument("--item", default=None,
+                                help="Identifiant d'item (checkpoint)")
+    sentinelle_cmd.add_argument("--statut", default=None,
+                                help="Statut typé (checkpoint) : EN-COURS, "
+                                     "TERMINE, INTERROMPU, A-REPRENDRE, BLOQUE")
+    sentinelle_cmd.add_argument("--note", default="",
+                                help="Note libre (checkpoint)")
+    sentinelle_cmd.add_argument("--agent", default="",
+                                help="Identifiant de l'agent (pulse)")
+    sentinelle_cmd.add_argument("--missions", default=".",
+                                help="Dossier racine des missions (check ; "
+                                     "défaut : .)")
+    sentinelle_cmd.add_argument("--seuil", type=int, default=1800,
+                                help="Seuil d'orpheline en secondes (check ; "
+                                     "défaut : 1800)")
+    sentinelle_cmd.set_defaults(commande="sentinelle")
+
+    markov_cmd = subparsers.add_parser("markov",
+                                       help="Chaînes de Markov : modéliser la "
+                                            "chaîne des goulots d'un pipeline "
+                                            "(construire, diagnostic, simuler)")
+    markov_cmd.add_argument("action",
+                            choices=["construire", "diagnostic", "simuler",
+                                     "exemple"],
+                            help="construire : bâtir la chaîne depuis un "
+                                 "fichier d'observations JSON ; diagnostic : "
+                                 "matrice, stationnaire, goulot, absorption ; "
+                                 "simuler : sensibilité au débit d'un étage ; "
+                                 "exemple : jeu d'observations AST réel")
+    markov_cmd.add_argument("--observations", default=None,
+                            help="Fichier JSON d'observations "
+                                 "(construire ; liste de "
+                                 "{etape, duree_s, octets, succes})")
+    markov_cmd.add_argument("--ordre", default=None,
+                            help="Ordre canonique des étapes, séparé par des "
+                                 "virgules (construire ; défaut : inféré)")
+    markov_cmd.add_argument("--chaine", default=None,
+                            help="Fichier JSON de chaîne "
+                                 "(diagnostic, simuler)")
+    markov_cmd.add_argument("--sortie", default=None,
+                            help="Fichier de sortie pour la chaîne construite "
+                                 "(construire)")
+    markov_cmd.add_argument("--etape", default=None,
+                            help="Étage à accélérer (simuler)")
+    markov_cmd.add_argument("--facteur", type=float, default=2.0,
+                            help="Multiplicateur de débit (simuler ; "
+                                 "défaut : 2.0)")
+    markov_cmd.set_defaults(commande="markov")
+
+    write_cmd = subparsers.add_parser("write",
+                                      help="phiwrite : générer du code Lean 4 "
+                                           "depuis une spec JSON structurée")
+    write_cmd.add_argument("--spec", default=None,
+                           help="Fichier JSON de spécification "
+                                "({theorems: [{name, imports, statement, "
+                                "proof, doc}]}) ; 'exemple' pour la spec "
+                                "d'exemple intégrée")
+    write_cmd.add_argument("--sortie", default=None,
+                           help="Fichier .lean à écrire")
+    write_cmd.add_argument("--allow-sorry", action="store_true",
+                           default=False,
+                           help="Autoriser sorry/admit (refusé par défaut, "
+                                "doctrine : pas de trou déguisé)")
+    write_cmd.set_defaults(commande="write")
+
+    telemetry_cmd = subparsers.add_parser("telemetry",
+                                         help="telemetry : lire l'état interne "
+                                              "de l'exporteur v2 "
+                                              "(export_v2.telemetry.json)")
+    telemetry_cmd.add_argument("--fichier", default=None,
+                               help="Chemin du export_v2.telemetry.json "
+                                    "(défaut : recherche en remontant depuis .)")
+    telemetry_cmd.add_argument("--terrain", default=".",
+                               help="Dossier de départ pour la recherche "
+                                    "du fichier télémétrie")
+    telemetry_cmd.add_argument("--total", type=int, default=208018,
+                               help="Nombre total de déclarations attendu "
+                                    "(pour le %%)")
+    telemetry_cmd.set_defaults(commande="telemetry")
+
     return parser
 
 
@@ -1255,6 +1364,188 @@ def _executer_entropie(args: argparse.Namespace) -> int:
     return 0
 
 
+def _executer_sentinelle(args: argparse.Namespace) -> int:
+    """Exécute 'sentinelle' : init / checkpoint / pulse / check / reprise / dormants / enchaine.
+
+    Lecture/écriture sur disque durable uniquement. check MONTRE les
+    orphelines, reprise GÉNÈRE le brief, enchaine FAIT AVANCER l'état
+    d'une mission vérifiée figée (ordre Tomy 2026-10-05).
+    """
+    from . import sentinelle as mod_sentinelle
+    action = getattr(args, "action", None)
+    terrain = getattr(args, "terrain", None) or "."
+    if action == "init":
+        nom = getattr(args, "nom", None) or os.path.basename(
+            os.path.abspath(terrain))
+        res = mod_sentinelle.init(terrain, nom)
+        print(f"✅ mission « {res['nom']} » initialisée"
+              if res["cree"]
+              else f"ℹ️ mission « {res['nom']} » déjà initialisée (état préservé)")
+        return 0
+    if action == "checkpoint":
+        item = getattr(args, "item", None)
+        statut = getattr(args, "statut", None)
+        if not item or not statut:
+            print("❌ --item et --statut requis pour checkpoint")
+            return 1
+        try:
+            mod_sentinelle.checkpoint(
+                terrain, item, statut, note=getattr(args, "note", "") or "")
+        except ValueError as e:
+            print(f"❌ {e}")
+            return 1
+        print(f"✅ [{statut}] {item}")
+        return 0
+    if action == "pulse":
+        mod_sentinelle.pulse(terrain, agent=getattr(args, "agent", "") or "")
+        print("💓 pulsation enregistrée")
+        return 0
+    if action == "check":
+        trouvees = mod_sentinelle.orphelines(
+            getattr(args, "missions", None) or ".",
+            seuil_s=getattr(args, "seuil", None) or 1800)
+        print(mod_sentinelle.rendre_orphelines_console(trouvees))
+        return 0
+    if action == "reprise":
+        print(mod_sentinelle.brief_reprise(terrain))
+        return 0
+    if action == "dormants":
+        print(mod_sentinelle.brief_reveil(terrain))
+        return 0
+    if action == "enchaine":
+        print(mod_sentinelle.rendre_enchaine_console(
+            mod_sentinelle.enchaine(terrain)))
+        return 0
+    return 1
+
+
+def _executer_markov(args: argparse.Namespace) -> int:
+    """Exécute 'markov' : construire / diagnostic / simuler / exemple.
+
+    L'instrument modélise, il ne décide pas : il calcule le goulot et
+    les gains simulés depuis des observations, sans toucher au pipeline.
+    """
+    from . import markov as mod_markov
+    action = getattr(args, "action", None)
+    if action == "exemple":
+        import json
+        print(json.dumps(mod_markov.exemple_observations_ast(),
+                         ensure_ascii=False, indent=2))
+        return 0
+    if action == "construire":
+        import json
+        chemin_obs = getattr(args, "observations", None)
+        if not chemin_obs:
+            print("❌ --observations requis pour construire")
+            return 1
+        with open(chemin_obs, encoding="utf-8") as fh:
+            observations = json.load(fh)
+        ordre_txt = getattr(args, "ordre", None)
+        ordre = ([e.strip() for e in ordre_txt.split(",") if e.strip()]
+                 if ordre_txt else None)
+        try:
+            chaine = mod_markov.construire(observations, ordre=ordre)
+        except ValueError as e:
+            print("❌ %s" % e)
+            return 1
+        sortie = getattr(args, "sortie", None)
+        if sortie:
+            mod_markov.sauvegarder(chaine, sortie)
+            print("✅ chaîne construite (%d états, %d runs) → %s"
+                  % (len(chaine["etats"]), chaine["runs_n"], sortie))
+        else:
+            print(mod_markov.rendre_diagnostic_console(chaine))
+        return 0
+    if action == "diagnostic":
+        chemin = getattr(args, "chaine", None)
+        if not chemin:
+            print("❌ --chaine requis pour diagnostic")
+            return 1
+        try:
+            chaine = mod_markov.charger(chemin)
+        except (OSError, ValueError) as e:
+            print("❌ %s" % e)
+            return 1
+        print(mod_markov.rendre_diagnostic_console(chaine))
+        return 0
+    if action == "simuler":
+        chemin = getattr(args, "chaine", None)
+        etape = getattr(args, "etape", None)
+        if not chemin or not etape:
+            print("❌ --chaine et --etape requis pour simuler")
+            return 1
+        try:
+            chaine = mod_markov.charger(chemin)
+        except (OSError, ValueError) as e:
+            print("❌ %s" % e)
+            return 1
+        try:
+            scenario = mod_markov.simuler_debit(
+                chaine, etape, getattr(args, "facteur", 2.0))
+        except ValueError as e:
+            print("❌ %s" % e)
+            return 1
+        print(mod_markov.rendre_simulation_console(scenario))
+        return 0
+    return 1
+
+
+def _executer_write(args: argparse.Namespace) -> int:
+    """Exécute 'write' : génère un .lean depuis une spec JSON.
+
+    L'instrument met en forme, il ne prouve rien : la validation est
+    syntaxique (délimiteurs, champs, pas de sorry sauf flag), la
+    vérification sémantique reste le job de Lean (élaboration).
+    """
+    from . import phiwrite as mod_phiwrite
+    chemin_spec = getattr(args, "spec", None)
+    sortie = getattr(args, "sortie", None)
+    allow_sorry = bool(getattr(args, "allow_sorry", False))
+    if not chemin_spec or not sortie:
+        print("❌ --spec et --sortie requis "
+              "(--spec exemple : spec intégrée)")
+        return 1
+    try:
+        if chemin_spec == "exemple":
+            spec = mod_phiwrite.exemple_spec()
+        else:
+            spec = mod_phiwrite.charger_spec(chemin_spec)
+    except (OSError, ValueError) as e:
+        print("❌ %s" % e)
+        return 1
+    try:
+        res = mod_phiwrite.ecrire(spec, sortie, allow_sorry=allow_sorry)
+    except ValueError as e:
+        print("❌ %s" % e)
+        return 1
+    print("✅ %d théorème(s) → %s (imports : %s)"
+          % (res["theoremes"], res["chemin"], ", ".join(res["imports"])))
+    return 0
+
+
+def _executer_telemetry(args: argparse.Namespace) -> int:
+    """Exécute 'telemetry' : lit export_v2.telemetry.json et l'affiche.
+
+    L'instrument lit, il n'interprète pas : ce que le JSON dit, c'est
+    ce qu'on affiche. Ordre Tomy (2026-10-06).
+    """
+    from . import telemetry as mod_telemetry
+    chemin = getattr(args, "fichier", None)
+    if not chemin:
+        chemin = mod_telemetry.trouver_telemetry(
+            getattr(args, "terrain", "."))
+    if not chemin:
+        print("❌ export_v2.telemetry.json introuvable "
+              "(cherché depuis %s)" % getattr(args, "terrain", "."))
+        return 1
+    donnees, erreur = mod_telemetry.lire_telemetry(chemin)
+    if erreur:
+        print("❌ %s : %s" % (chemin, erreur))
+        return 1
+    return mod_telemetry.afficher(
+        donnees, chemin, total_attendu=getattr(args, "total", 208018))
+
+
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
@@ -1332,6 +1623,26 @@ def main():
     if args.commande == "explorer":
         # L'explorateur lit registre + croyances et écrit un HTML : court-circuit.
         sys.exit(_executer_explorer(args))
+
+    if args.commande == "sentinelle":
+        # La sentinelle travaille sur disque durable, pas sur des fichiers
+        # sources : court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_sentinelle(args))
+
+    if args.commande == "markov":
+        # Les chaînes de Markov travaillent sur des JSON, pas des sources :
+        # court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_markov(args))
+
+    if args.commande == "write":
+        # phiwrite génère depuis une spec JSON, pas depuis des sources :
+        # court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_write(args))
+
+    if args.commande == "telemetry":
+        # La télémétrie lit un JSON d'état, pas des sources :
+        # court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_telemetry(args))
 
     fichiers = _collecter_fichiers(args.cible)
     if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):

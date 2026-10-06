@@ -218,6 +218,41 @@ JUSTIFICATIONS = {
                "l'instrument voit tout, il ne rate rien.",
         "sert": "instrument",
     },
+    "sentinelle": {
+        "but": "Surveillance des processus longs : détecte les blocages "
+               "et les dérives d'un export ou d'une compilation Lean — "
+               "l'instrument signale au lieu de laisser mourir en silence.",
+        "sert": "instrument",
+    },
+    "markov": {
+        "but": "Chaînes de Markov sur les transitions d'états : modélise "
+               "les passages entre statuts typés pour ordonner les vagues "
+               "de sondes par densité empirique.",
+        "sert": "tous",
+    },
+    "phiwrite": {
+        "but": "Écriture assistée des rapports : génère les comptes-rendus "
+               "de mission au format attendu, sans contaminer le contenu "
+               "par des artefacts de génération.",
+        "sert": "instrument",
+    },
+    "carnet": {
+        "but": "Carnet de bord : consigne les intentions avant l'acte et "
+               "les empreintes après — traçabilité complète des opérations "
+               "sur les chantiers.",
+        "sert": "instrument",
+    },
+    "journal": {
+        "but": "Journal horodaté des événements : archive les faits "
+               "bruts pour reconstruction a posteriori des trajectoires.",
+        "sert": "instrument",
+    },
+    "telemetry": {
+        "but": "Lecture de la télémétrie de l'exporteur Lean : expose "
+               "l'état interne (déclaration en cours, tables, dedup) pour "
+               "diagnostiquer les blocages sans deviner.",
+        "sert": "instrument",
+    },
 }
 
 

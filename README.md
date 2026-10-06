@@ -106,6 +106,9 @@ rapport_markdown("my_script.py", sortie="report.md")
 | `phi entropie` | Experimental | Entropy lens: the ciphered ledger of narrowing (H and ΔH in bits, EFT bounds) |
 | `phi ou-aller` | Experimental | Where to go next: attention list (not a decision) |
 | `phi edit` | Experimental | Edit a file in the phi TUI editor |
+| `phi sentinelle` | Experimental | Mission survival across reboots: structured state, heartbeat, orphans, resume brief, dormants, enchaine |
+| `phi markov` | Experimental | Markov chains: model a pipeline's bottleneck chain (build, diagnose, simulate throughput) |
+| `phi write` | Experimental | Generate Lean 4 code from a structured JSON spec (formats, never proves) |
 
 **Tip:** keep `phi check`/`phi report`/`phi oracle` in CI. Use `phi snapshot` + `phi veille` to catch silent regressions between releases.
 
