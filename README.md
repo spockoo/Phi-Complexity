@@ -232,6 +232,12 @@ MIT — Tomy Verreault, 2026
 
 ## 📜 Historique des Versions (Changelog)
 
+- **v0.16.0 (Modules v110 + phi telemetry)** :
+  - **Nouveaux modules v110** : `sentinelle` (surveillance des processus longs), `markov` (chaînes de Markov sur transitions d'états), `phiwrite` (écriture assistée des rapports), `carnet` (carnet de bord), `journal` (journal horodaté).
+  - **Nouvelles commandes** : `phi markov`, `phi write`, `phi sentinelle`.
+  - **Nouveau `phi telemetry`** : lit `export_v2.telemetry.json` (état interne de l'exporteur Lean) — déclaration en cours, tailles des tables, taux de déduplication estimé.
+  - Registre `mission.py` : justifications « but de mission » pour les 6 nouveaux modules (garde anti-divergence OK).
+
 - **v0.15.0 (Le Témoin : radar + sismique)** :
   - **Nouveau `phi radar --avant S1 --apres S2`** : vue du mouvement structurel entre deux états — 5 détecteurs purement mécaniques (énoncé modifié avec énoncé/corps hashés séparément, preuve effondrée couplée à énoncé qui bouge, nouvel axiome, définition dupliquée, nouveau sorry). Poids de saillance fixes et documentés dans le code, jamais appris. Sortie console + JSON : faits uniquement (fichier, ligne, avant/après), jamais de verdict.
   - **Nouveau `phi sismique --depuis <date> [--depot]`** : mémoire des rythmes via l'historique git (stdlib uniquement) — fréquence de touches, mécanisme (construction/effondrement/barattage/ajustement), répliques (≥3 touches/24h), profondeur et rayon de propagation via le graphe de dépendances, magnitude, épicentre. Le sismogramme décrit, il ne juge jamais.
