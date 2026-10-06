@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.17.0] — 2026-10-06 — Double licence
+
+- **Double licence** : GPL v3 (usage libre et open source) OU Licence
+  Commerciale (usage dans logiciel propriétaire, à partir de 200 $/an).
+  Voir `LICENSE`, `LICENSE-COMMERCIAL.md`.
+- Nouveau `CONTRIBUTING.md` : les contributeurs acceptent la double licence.
+- *Les versions 0.16.1 et antérieures restent sous licence MIT.*
+
+## [0.16.1] — 2026-10-06 — Correctif changelog
+
+- Ajout de l'entrée changelog **v0.16.0** manquante dans le README.
+- Aucun changement de code depuis 0.16.0.
+
+## [0.16.0] — 2026-10-06 — Modules v110 + phi telemetry
+
+- Nouveaux modules v110 : `sentinelle`, `markov`, `phiwrite`, `carnet`,
+  `journal`. Nouvelles commandes : `phi markov`, `phi write`, `phi sentinelle`.
+- Nouveau `phi telemetry` : lit l'état interne de l'exporteur Lean.
+- `mission.py` : justifications pour les 6 nouveaux modules.
+
 ## [0.15.0] — 2026-10-03 — Le Témoin : radar + sismique
 
 - `phi radar --avant S1 --apres S2` : vue du mouvement structurel entre deux

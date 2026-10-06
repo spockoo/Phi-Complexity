@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phi-complexity"
-version = "0.16.1"
+version = "0.17.0"
 description = "Multi-language code quality metrics based on Golden Ratio (φ) mathematical invariants and adiabatic equilibrium"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-or-later OR Commercial"}
 authors = [
     {name = "Tomy Verreault", email = "contact@phidelia.dev"}
 ]
@@ -19,7 +19,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
