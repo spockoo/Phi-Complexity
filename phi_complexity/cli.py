@@ -85,6 +85,27 @@ Exemples :
     edit.add_argument("--lang", default=None,
                       help="Force le langage pour l'audit phi (ex: python)")
 
+    compress_cmd = subparsers.add_parser("compress", help="Compresse un dossier en archive .phiz (optimisé Lean)")
+    compress_cmd.add_argument("source", help="Dossier à compresser")
+    compress_cmd.add_argument("-o", "--output", required=True, help="Archive .phiz de sortie")
+    compress_cmd.add_argument("--jobs", type=int, default=4, help="Threads de compression (défaut: 4)")
+    compress_cmd.add_argument("--per-file", action="store_true",
+                              help="Compression par fichier (accès aléatoire fin, ratio légèrement moindre)")
+    compress_cmd.add_argument("--bloc", type=int, default=10,
+                              help="Taille des blocs solides en Mo (défaut: 10, 0=per-file)")
+    compress_cmd.add_argument("--split", type=int, default=0, metavar="MO",
+                              help="Découpe l'archive en parties de N Mo (défaut: 0=pas de découpage)")
+    compress_cmd.set_defaults(commande="compress")
+
+    decompress_cmd = subparsers.add_parser("decompress", help="Décompresse une archive .phiz")
+    decompress_cmd.add_argument("archive", help="Archive .phiz")
+    decompress_cmd.add_argument("-o", "--output", default=None, help="Dossier de destination (défaut: ./<nom>)")
+    decompress_cmd.add_argument("--list", action="store_true", help="Liste les fichiers sans extraire")
+    decompress_cmd.add_argument("--extract", default=None, metavar="CHEMIN",
+                                help="Extrait un seul fichier (accès aléatoire)")
+    decompress_cmd.add_argument("--jobs", type=int, default=4, help="Threads (défaut: 4)")
+    decompress_cmd.set_defaults(commande="decompress")
+
     index = subparsers.add_parser("index", help="Carte du projet : symboles, collisions, santé phi")
     index.add_argument("dossier", help="Dossier projet à cartographier")
     index.add_argument("--format", choices=["console", "json"], default="console",
@@ -796,6 +817,115 @@ def _executer_edit(args: argparse.Namespace) -> int:
         print(f"❌ Erreur de l'éditeur : {e}")
         return 1
     return 0
+
+def _executer_compress(args: argparse.Namespace) -> int:
+    """Exécute 'phi compress' : dossier -> archive .phiz."""
+    from pathlib import Path
+    from .toolchain.compress import PhizWriter, split_file
+    import time
+
+    source = Path(args.source)
+    output = Path(args.output)
+    if not source.is_dir():
+        print(f"❌ Dossier introuvable : {source}")
+        return 1
+
+    block_size = 0 if args.per_file else args.bloc * 1024 * 1024
+    mode = "per-file" if args.per_file else f"solide ({args.bloc} Mo/bloc)"
+
+    print(f"📦 Compression {mode} : {source} -> {output}")
+    start = time.time()
+
+    def progress(done, total, name):
+        pct = done / total * 100 if total else 0
+        print(f"\r  [{done}/{total}] {pct:.0f}% {name[:50]}", end="", flush=True)
+
+    try:
+        writer = PhizWriter(output, jobs=args.jobs, progress_cb=progress,
+                            solid_block_size=block_size)
+        summary = writer.write(source)
+    except Exception as e:
+        print(f"\n❌ Échec : {e}")
+        return 1
+
+    elapsed = time.time() - start
+    print(f"\n✅ {summary['files']} fichiers en {elapsed:.1f}s")
+    print(f"   Original : {summary['original_bytes']:,} octets")
+    print(f"   Compressé : {summary['compressed_bytes']:,} octets")
+    print(f"   Ratio : {summary['ratio_pct']:.1f}%")
+
+    if args.split > 0:
+        chunk = args.split * 1024 * 1024
+        parts_dir = output.parent / f"{output.name}.parts"
+        print(f"✂️  Découpage en parties de {args.split} Mo...")
+        parts = split_file(output, chunk, parts_dir,
+                           progress_cb=lambda d, t: print(f"\r  Partie {d}/{t}", end="", flush=True))
+        print(f"\n✅ {len(parts)} parties dans {parts_dir}/")
+        print(f"   Manifeste : {parts_dir}/{output.name}.manifest")
+    return 0
+
+
+def _executer_decompress(args: argparse.Namespace) -> int:
+    """Exécute 'phi decompress' : archive .phiz -> dossier."""
+    from pathlib import Path
+    from .toolchain.compress import PhizReader
+    import time
+
+    archive = Path(args.archive)
+    if not archive.exists():
+        print(f"❌ Archive introuvable : {archive}")
+        return 1
+
+    try:
+        reader = PhizReader(archive)
+    except Exception as e:
+        print(f"❌ Archive illisible : {e}")
+        return 1
+
+    mode = "solide" if reader.solid else "per-file"
+    print(f"📦 Archive .phiz ({mode}) : {len(reader.entries)} fichiers")
+
+    if args.list:
+        for path in reader.list_files():
+            print(f"  {path}")
+        return 0
+
+    if args.extract:
+        try:
+            data = reader.extract_file(args.extract)
+        except KeyError:
+            print(f"❌ Fichier absent de l'archive : {args.extract}")
+            return 1
+        except ValueError as e:
+            print(f"❌ {e}")
+            return 1
+        out = Path(args.output) if args.output else Path(args.extract).name
+        out = Path(out)
+        if out.is_dir() or args.output is None:
+            out = (Path(args.output) if args.output else Path(".")) / Path(args.extract).name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        print(f"✅ Extrait : {args.extract} -> {out} ({len(data):,} octets)")
+        return 0
+
+    dest = Path(args.output) if args.output else Path(archive.stem)
+    print(f"📂 Extraction vers {dest}/")
+    start = time.time()
+
+    def progress(done, total, name):
+        pct = done / total * 100 if total else 0
+        print(f"\r  [{done}/{total}] {pct:.0f}% {name[:50]}", end="", flush=True)
+
+    try:
+        reader.extract_all(dest, progress_cb=progress, jobs=args.jobs)
+    except Exception as e:
+        print(f"\n❌ Échec : {e}")
+        return 1
+
+    elapsed = time.time() - start
+    print(f"\n✅ Extraction terminée en {elapsed:.1f}s")
+    return 0
+
 
 def _executer_index(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'index' : carte du projet (console ou json)."""
@@ -2302,6 +2432,12 @@ def main():
         # L'éditeur accepte tout fichier texte, existant ou à créer :
         # pas de collecte préalable de fichiers supportés.
         sys.exit(_executer_edit(args))
+
+    if args.commande == "compress":
+        sys.exit(_executer_compress(args))
+
+    if args.commande == "decompress":
+        sys.exit(_executer_decompress(args))
 
     if args.commande == "index":
         # La carte travaille sur un dossier (pas une liste de fichiers) :
