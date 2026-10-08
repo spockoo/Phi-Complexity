@@ -103,6 +103,11 @@ Exemples :
                             "sans calculer les métriques — quasi-instantané. "
                             "La radiance et l'oudjat sont alors non calculés "
                             "(null dans le JSON, signalés dans la console).")
+    index.add_argument("--sans-scipy-mini", action="store_true",
+                       help="N'utilise pas le backend natif phi_scipy "
+                            "(graphe CSR) pour la détection des collisions : "
+                            "revient à l'implémentation Python pure d'origine. "
+                            "Sortie identique, juste le moteur de calcul change.")
 
     chemins = subparsers.add_parser("chemins", help="Carte croyante : symboles classés par postérieur "
                                                     "(quel trou attaquer en premier)")
@@ -764,7 +769,8 @@ def _executer_index(args: argparse.Namespace) -> int:
     try:
         carte = carte_projet(dossier, lang=getattr(args, "lang", None),
                              exclusions=exclusions,
-                             complet=not getattr(args, "rapide", False))
+                             complet=not getattr(args, "rapide", False),
+                             utiliser_scipy_mini=not getattr(args, "sans_scipy_mini", False))
     except Exception as e:
         print(f"❌ Erreur lors de la cartographie : {e}")
         return 1
