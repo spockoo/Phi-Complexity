@@ -3,5 +3,8 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .phi/
+# Parse cache natif de `phi check` (PHI-NATIF-C) : optimisation locale,
+# jamais versionnée — reconstruit automatiquement à chaque audit.
+.phi_cache/
 dist/
 build/

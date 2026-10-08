@@ -58,6 +58,11 @@ Exemples :
                        help="Formule arithmétique personnalisée évaluée sur les métriques")
     check.add_argument("--gate", default=None,
                        help="Porte logique de qualité : exit 1 si l'expression est fausse")
+    check.add_argument("--sans-cache", action="store_true",
+                       help="Désactive le parse cache natif (re-parse systématique des fichiers)")
+    check.add_argument("--stats-cache", action="store_true",
+                       help="Affiche les statistiques du parse cache en fin d'audit "
+                            "(hits, hit rate, taille)")
 
     report = subparsers.add_parser("report", help="Générer un rapport Markdown")
     report.add_argument("cible", help="Fichier à analyser")
@@ -230,7 +235,8 @@ Exemples :
     sonde = subparsers.add_parser("sonde",
                                   help="Sondes A/B : tracer l'inconditionnel à "
                                        "partir du conditionnel (pôle fermeture / "
-                                       "pôle obstruction)")
+                                       "pôle obstruction) + analyse d'impact "
+                                       "Python native du symbole sondé")
     sonde.add_argument("mecanisme",
                        help="Mécanisme à sonder : sorry du Master "
                             "(ex. energy_identity), hypothèse nommée "
@@ -249,6 +255,11 @@ Exemples :
                             "(mode --format json uniquement : attache la "
                             "section `entropie` par nœud ; défaut : "
                             "~/workspace/lean-navier-stokes)")
+    sonde.add_argument("--sans-impact", action="store_true",
+                       help="Désactive l'analyse d'impact Python native "
+                            "(activée par défaut : section Impact calculée "
+                            "quand le mécanisme sondé correspond à un "
+                            "symbole Python du paquet phi_complexity)")
 
     piste_sorry = subparsers.add_parser("piste-sorry",
                                         help="Piste d'un sorry : inventaire "
@@ -532,17 +543,59 @@ def _collecter_fichiers(cible: str) -> list:
 # ────────────────────────────────────────────────────────
 
 def _executer_check(args: argparse.Namespace, fichiers: list) -> int:
-    """Exécute la sous-commande 'check'. Retourne le code de sortie."""
-    # Si la cible est un dossier avec plus d'un fichier et que le format est console, afficher d'abord la matrice
-    if os.path.isdir(args.cible) and len(fichiers) > 1 and args.format == "console":
-        from . import rapport_matrice_console
-        print(rapport_matrice_console(args.cible))
-        print()
+    """Exécute la sous-commande 'check'. Retourne le code de sortie.
+
+    Le parse cache natif (PHI-NATIF-C) est actif par défaut : une session
+    est ouverte sur la cible, chaque fichier audité consulte le cache avant
+    de re-parser, et le cache est persisté sur disque à la sortie.
+    `--sans-cache` désactive ce comportement ; `--stats-cache` affiche les
+    statistiques en fin d'audit. Le cache est transparent : même sortie,
+    juste plus rapide — et toute défaillance dégrade gracieusement vers le
+    parsing normal, jamais de crash.
+    """
+    from .cache import session_parse_cache
+    sans_cache = bool(getattr(args, "sans_cache", False))
+    stats_cache = bool(getattr(args, "stats_cache", False))
 
     exit_code = 0
-    for fichier in fichiers:
-        exit_code = max(exit_code, _auditer_un_fichier(fichier, args))
+    # La session ne lève jamais (dégradation gracieuse interne) : le `with`
+    # couvre aussi la matrice projet pour que le second passage (l'audit
+    # fichier par fichier) bénéficie des hits du premier.
+    with session_parse_cache(args.cible, sans_cache=sans_cache) as cache:
+        # Si la cible est un dossier avec plus d'un fichier et que le format est console, afficher d'abord la matrice
+        if os.path.isdir(args.cible) and len(fichiers) > 1 and args.format == "console":
+            from . import rapport_matrice_console
+            print(rapport_matrice_console(args.cible))
+            print()
+
+        for fichier in fichiers:
+            exit_code = max(exit_code, _auditer_un_fichier(fichier, args))
+        if stats_cache:
+            _afficher_stats_cache(cache, args.cible)
     return exit_code
+
+
+def _afficher_stats_cache(cache, cible: str) -> None:
+    """Affiche les statistiques du parse cache (option --stats-cache)."""
+    try:
+        from .cache import resoudre_racine_cache
+        if cache is None:
+            print("── Parse cache : désactivé (--sans-cache) ──")
+            return
+        stats = cache.stats()
+        racine = resoudre_racine_cache(cible)
+        total = stats["hits"] + stats["misses"]
+        taux = (100.0 * stats["hits"] / total) if total else 0.0
+        print("── Parse cache ──")
+        print(f"  racine    : {racine}")
+        print(f"  hits      : {stats['hits']}")
+        print(f"  misses    : {stats['misses']}")
+        print(f"  hit rate  : {taux:.1f} %")
+        print(f"  entrées   : {stats['entrees']} / {stats['capacite']}")
+        print(f"  évictions : {stats['evictions']}")
+    except Exception as e:
+        # Les stats sont informatives : leur échec ne doit pas masquer l'audit.
+        print(f"  ⚠ Statistiques du cache indisponibles : {e}")
 
 
 def _auditer_un_fichier(fichier: str, args: argparse.Namespace) -> int:
@@ -1069,6 +1122,23 @@ def _executer_sonde(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"❌ Erreur lors du sondage : {e}")
         return 1
+    # Analyse d'impact native (PHI-NATIF-B) : construite UNE SEULE FOIS
+    # par invocation, sur le paquet phi_complexity. Dégradation gracieuse
+    # (avertissement dans la section, jamais de crash) si le symbole n'est
+    # pas Python ou si le graphe échoue. --sans-impact la désactive.
+    if not getattr(args, "sans_impact", False):
+        try:
+            from .impact_sonde import analyser_impact
+            resultat.impact = analyser_impact(args.mecanisme)
+        except Exception as e:
+            resultat.impact = {
+                "desactive": True,
+                "symbole_recherche": args.mecanisme,
+                "avertissement": (
+                    f"analyse d'impact indisponible "
+                    f"({type(e).__name__} : {e})"
+                ),
+            }
     if getattr(args, "format", "console") == "json":
         # Ancrage entropique (import direct d'entropie.py via ancrage.py —
         # jamais de subprocess) : section `entropie` par nœud + mécanisme.
