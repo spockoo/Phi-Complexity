@@ -60,3 +60,39 @@ Délégation à `phi_complexity.lilith.phi_lilith.main(argv)` (contrat existant)
 - Commit local uniquement. **PUSH INTERDIT** sur `origin`
   (github.com/spockoo/Phi-Complexity).
 - Vérifié : aucun `git push` exécuté pendant la mission.
+
+## Mission PHI-NATIF-D (2026-10-08) — phi_scipy natif dans `phi index`
+
+**Constat d'enquête (honnête)** : `phi index` (`carte_projet`) ne fait AUCUN
+calcul de graphe BFS/degrés/composantes/PageRank — vérifié par grep + profilage
+(le temps va à l'analyse syntaxique et à l'audit par fichier). Le seul noyau à
+structure de graphe est l'incidence bipartie nom×fichier de la détection des
+collisions (`_detecter_collisions`, ~0,2 % du temps total).
+
+**Intégration** (`phi_complexity/carte.py`, `phi_complexity/cli.py`) :
+- `_detecter_collisions_python` : implémentation d'origine, inchangée (référence).
+- `_detecter_collisions_scipy` : backend natif `BinaryCSR` (construction +
+  comptage vectorisé des fichiers distincts par nom) — sortie prouvée identique.
+- `_detecter_collisions(index, utiliser_scipy_mini=True)` : répartiteur —
+  tente scipy_mini, REPLI GRACIEUX vers le Python pur sur toute exception
+  (numpy absent y compris : `dependencies = []` reste vrai).
+- `carte_projet(..., utiliser_scipy_mini=True)` ; CLI : `phi index --sans-scipy-mini`.
+- `@auto_optimize` NON utilisé (justifié en commentaire) : son routage par
+  densité choisirait toujours le CSR (incidence toujours ultra-creuse) alors
+  que les mesures montrent le Python pur à égalité ou devant aux échelles
+  réalistes — le routage par densité aurait systématiquement ralenti.
+
+**Mesures** (dogfooding, dépôt phi-pub : 134 fichiers, 2145 symboles, 105 collisions) :
+- JSON byte-identique avec/sans (md5 `f903546ce8f2fb70a1f66435452b0ac1`), console
+  byte-identique (md5 `41820de014f5342c84f81df9ac84350a`).
+- Noyau collisions seul : 3,55 ms (Python) vs 3,43 ms (CSR) — équivalents.
+- `phi index` total : 1,55 s (scipy, défaut) vs 1,44 s (`--sans-scipy-mini`) —
+  l'écart vient de l'import numpy (220 ms à froid, une fois par processus),
+  pas du noyau. Rapporté honnêtement : pas de gain sur cette charge.
+
+**Tests** : `tests/test_carte.py::TestScipyMini` — équivalence des backends,
+équivalence carte complète, repli gracieux (panne simulée), index vide.
+`pytest tests/test_carte.py tests/test_vitesse.py tests/test_durcissement.py
+tests/test_zero_treesitter_silencieux.py` : 55 passed.
+
+**Commits** : local uniquement sur `feat/dual-licensing`. **PUSH INTERDIT**.

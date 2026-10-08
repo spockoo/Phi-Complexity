@@ -174,3 +174,47 @@ class TestSantePhi:
         carte = carte_projet(mini_projet)
         moyenne = sum(f["radiance"] for f in carte["fichiers"]) / carte["nb_fichiers"]
         assert abs(carte["radiance_globale"] - round(moyenne, 2)) < 0.01
+
+
+class TestScipyMini:
+    """Backend natif phi_scipy (mission PHI-NATIF-D) : sortie identique,
+    repli gracieux, flag --sans-scipy-mini."""
+    np = pytest.importorskip("numpy", reason="scipy_mini exige numpy")
+
+    def test_equivalence_backends(self, mini_projet):
+        """Les deux backends produisent des collisions IDENTIQUES."""
+        from phi_complexity.carte import (_detecter_collisions_python,
+                                          _detecter_collisions_scipy)
+        from phi_complexity.editeur.indexeur import indexer_projet
+        index = indexer_projet(mini_projet, complet=True)
+        attendu = _detecter_collisions_python(index)
+        assert _detecter_collisions_scipy(index) == attendu
+
+    def test_equivalence_carte_complete(self, mini_projet):
+        """carte_projet avec et sans scipy_mini : JSON identique."""
+        import json
+        avec = carte_projet(mini_projet, utiliser_scipy_mini=True)
+        sans = carte_projet(mini_projet, utiliser_scipy_mini=False)
+        assert (json.dumps(avec, sort_keys=True, ensure_ascii=False)
+                == json.dumps(sans, sort_keys=True, ensure_ascii=False))
+
+    def test_repli_gracieux(self, mini_projet, monkeypatch):
+        """Si scipy_mini échoue, repli silencieux vers le Python pur."""
+        import phi_complexity.carte as carte_mod
+        from phi_complexity.carte import _detecter_collisions_python
+        from phi_complexity.editeur.indexeur import indexer_projet
+
+        def _panne(_index):
+            raise RuntimeError("panne simulée de scipy_mini")
+
+        monkeypatch.setattr(carte_mod, "_detecter_collisions_scipy", _panne)
+        index = indexer_projet(mini_projet, complet=True)
+        assert (carte_mod._detecter_collisions(index, utiliser_scipy_mini=True)
+                == _detecter_collisions_python(index))
+
+    def test_index_vide(self):
+        """Index vide : les deux backends rendent []."""
+        from phi_complexity.carte import (_detecter_collisions_python,
+                                          _detecter_collisions_scipy)
+        assert _detecter_collisions_python({}) == []
+        assert _detecter_collisions_scipy({}) == []
