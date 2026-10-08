@@ -485,6 +485,16 @@ Exemples :
                                     "(pour le %%)")
     telemetry_cmd.set_defaults(commande="telemetry")
 
+    lilith_cmd = subparsers.add_parser("lilith",
+                                       help="Instruments Lilith : métriques, "
+                                            "batterie tri-domaine, curseur α, F1")
+    lilith_cmd.add_argument("reste", nargs=argparse.REMAINDER,
+                            help="Arguments passés à l'adaptateur lilith. "
+                                 "Mettre '--' avant les options lilith "
+                                 "(ex: phi lilith -- --format json mesurer "
+                                 "fichier.py)")
+    lilith_cmd.set_defaults(commande="lilith")
+
     return parser
 
 
@@ -1546,6 +1556,29 @@ def _executer_telemetry(args: argparse.Namespace) -> int:
         donnees, chemin, total_attendu=getattr(args, "total", 208018))
 
 
+def _executer_lilith(args: argparse.Namespace) -> int:
+    """Exécute 'lilith' : instruments Lilith (métriques, batterie, α, F1).
+
+    Délègue à l'adaptateur phi_lilith (contrat PHI_CONTRAT.md) : les
+    arguments après 'lilith' lui sont passés tels quels.
+    Exemples :
+      phi lilith mesurer mon_module.py
+      phi lilith batterie mon_module.py --format json
+      phi lilith f1 mon_module.py
+      phi lilith alpha mon_module.py --alphas 1,2,inf
+    """
+    from .lilith import phi_lilith
+    reste = getattr(args, "reste", []) or []
+    # argparse.REMAINDER capture aussi le séparateur '--' éventuel.
+    if reste and reste[0] == "--":
+        reste = reste[1:]
+    if not reste:
+        print("Usage : phi lilith {mesurer|batterie|alpha|f1|perf} "
+              "[options] (voir phi_lilith --help)")
+        return 2
+    return phi_lilith.main(reste)
+
+
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
@@ -1643,6 +1676,11 @@ def main():
         # La télémétrie lit un JSON d'état, pas des sources :
         # court-circuit avant la collecte de fichiers.
         sys.exit(_executer_telemetry(args))
+
+    if args.commande == "lilith":
+        # Les instruments Lilith travaillent sur un fichier Python ou un
+        # profil --kappas : court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_lilith(args))
 
     fichiers = _collecter_fichiers(args.cible)
     if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):
