@@ -517,18 +517,54 @@ Exemples :
 
     lean_cmd = subparsers.add_parser("lean", help="Toolchain Lean mini : installation et compilation")
     lean_cmd.add_argument("--init", action="store_true", help="Télécharge et installe la toolchain Lean mini (125 Mo)")
+    lean_cmd.add_argument("--install-mathlib", action="store_true",
+                          help="Installe Mathlib via le téléchargeur rapide (parallèle, multi-miroirs)")
+    lean_cmd.add_argument("--jobs", type=int, default=None,
+                          help="Connexions parallèles pour --install-mathlib (défaut: 8, max: 16)")
+    lean_cmd.add_argument("--miroir", default=None,
+                          help="Miroir Mathlib forcé (défaut: auto-sélection du plus rapide)")
+    lean_cmd.add_argument("--liste-urls", default=None, metavar="FICHIER",
+                          help="Fichier avec une URL .ltar par ligne (pour --install-mathlib)")
+    lean_cmd.add_argument("--dest-mathlib", default=None, metavar="DOSSIER",
+                          help="Dossier de destination (défaut: ~/.cache/phi-complexity/mathlib)")
     lean_cmd.add_argument("--extension", choices=["std", "lean"], default=None,
                           help="Avec --init : installe aussi l'extension optionnelle "
                                "'std' (import Std, +290 Mo) ou 'lean' (import Lean, "
                                "+1,2 Go, inclut std). Extraction à la demande depuis "
                                "l'archive déjà en cache (aucun téléchargement "
                                "supplémentaire).")
+    lean_cmd.add_argument("--avec-lake", action="store_true",
+                          help="Avec --init (ou seul) : installe aussi Lake, le "
+                               "gestionnaire de projets Lean (+34 Mo ; `lake new` "
+                               "/ `lake build` sur lakefile.toml, exécutables "
+                               "natifs inclus).")
+    lean_cmd.add_argument("--lake", nargs=argparse.REMAINDER, default=None,
+                          metavar="ARGS",
+                          help="Exécute lake avec ces arguments (ex : phi lean "
+                               "lake new monprojet — sans argument : aide de "
+                               "lake). Seuls les projets lakefile.toml sont "
+                               "supportés (pas lakefile.lean).")
     lean_cmd.add_argument("--version", action="store_true", help="Affiche la version de la toolchain installée")
     lean_cmd.add_argument("--ou", action="store_true", help="Affiche le chemin d'installation")
     lean_cmd.add_argument("--update-mathlib", action="store_true",
                           help="Met à jour Mathlib (plan affiché, feu vert requis si >100 Mo)")
     lean_cmd.add_argument("--mathlib-version", action="store_true",
                           help="Affiche la version Mathlib installée")
+    lean_cmd.add_argument("--migrer", metavar="VERSION", default=None,
+                          help="Migre vers une autre version Lean "
+                               "(ex. --migrer 4.34.0). Télécharge si nécessaire, "
+                               "bascule la version active, journalise.")
+    lean_cmd.add_argument("--versions", action="store_true",
+                          help="Liste les versions Lean installées")
+    lean_cmd.add_argument("--active", action="store_true",
+                          help="Affiche la version Lean active")
+    lean_cmd.add_argument("--revenir", action="store_true",
+                          help="Revient à la version précédente (rollback)")
+    lean_cmd.add_argument("--nettoyer", action="store_true",
+                          help="Supprime les versions non actives "
+                               "(dry-run sans --oui)")
+    lean_cmd.add_argument("--oui", action="store_true",
+                          help="Confirme sans demander (pour --migrer et --nettoyer)")
     lean_cmd.add_argument("--timeout", type=int, default=300, help="Délai max compilation (s)")
     groupe = lean_cmd.add_mutually_exclusive_group()
     groupe.add_argument("--exec", action="store_true", help="Exécute via lean --run au lieu de compiler")
@@ -1808,6 +1844,30 @@ def _executer_lilith(args: argparse.Namespace) -> int:
     return phi_lilith.main(reste)
 
 
+def _executer_lake_cmd(manager, args_lake, timeout) -> int:
+    """Exécute `phi lean lake <args>` : délègue au binaire lake installé.
+
+    Args:
+        manager: ToolchainManager (déjà construit).
+        args_lake: liste d'arguments passés à lake ([] = aide de lake).
+        timeout: délai max d'exécution (s).
+    """
+    from .toolchain import LakeAbsent, LakeConfigNonSupportee
+    try:
+        resultat = manager.executer_lake(args_lake, timeout_s=timeout)
+    except LakeAbsent as e:
+        print("❌ %s" % e)
+        return 1
+    except LakeConfigNonSupportee as e:
+        print("❌ %s" % e)
+        return 1
+    if resultat.get("stdout"):
+        print(resultat["stdout"], end="")
+    if resultat.get("stderr"):
+        print(resultat["stderr"], end="", file=sys.stderr)
+    return 0 if resultat.get("ok") else 1
+
+
 def _executer_lean(args: argparse.Namespace) -> int:
     """Exécute 'lean' : toolchain Lean mini (installation, compilation).
 
@@ -1815,10 +1875,13 @@ def _executer_lean(args: argparse.Namespace) -> int:
       phi lean --init              # télécharge et installe la toolchain
       phi lean --init --extension std   # + bibliothèque Std (import Std)
       phi lean --init --extension lean  # + bibliothèque Lean (import Lean)
+      phi lean --init --avec-lake  # + Lake (gestionnaire de projets, +34 Mo)
       phi lean --version            # affiche la version installée
       phi lean --ou                 # affiche le chemin d'installation
       phi lean preuve.lean          # compile le fichier
       phi lean preuve.lean --exec   # exécute via lean --run
+      phi lean lake new monprojet   # lake new (projet lakefile.toml)
+      phi lean lake build           # lake build dans le projet courant
     """
     from .toolchain import ToolchainManager, ToolchainAbsente
     from .toolchain import VersionNonSupportee, lire_version_projet
@@ -1826,8 +1889,18 @@ def _executer_lean(args: argparse.Namespace) -> int:
     from .toolchain.download import ErreurTelechargement, ErreurVerification
     from .toolchain.extract import ErreurExtraction
     from .toolchain.validate import ErreurValidation
+    from .toolchain.migration import (
+        GestionnaireVersions,
+        MigrationImpossible,
+        RollbackImpossible,
+        VersionInconnue,
+    )
+    from .toolchain.mathlib import TelechargementRefuse
 
-    manager = ToolchainManager()
+    gestionnaire = GestionnaireVersions()
+    # La version ACTIVE pilote toutes les opérations (repli historique :
+    # manifeste embarqué si aucun pointeur .active).
+    manager = gestionnaire.manager_actif()
 
     def _afficher_progression(phase, info):
         if phase == "deja_installee":
@@ -1850,13 +1923,22 @@ def _executer_lean(args: argparse.Namespace) -> int:
         elif phase == "extension_validation":
             print("\nValidation de l'extension '%s'…"
                   % info.get("extension"), flush=True)
+        elif phase == "extraction_lake":
+            print("Lake : %d fichiers (%.1f Mo)"
+                  % (info.get("fichiers", 0), info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "validation_lake":
+            print("\nValidation de Lake…", flush=True)
         elif phase == "terminee":
             print("\nInstallation terminée : %s" % info.get("rep", ""))
 
     def _installer_ou_erreur():
         """Installe la toolchain (idempotent). True si OK, False sinon."""
         try:
-            resultat = manager.installer(progression=_afficher_progression)
+            resultat = manager.installer(
+                progression=_afficher_progression,
+                avec_lake=getattr(args, "avec_lake", False),
+            )
         except (ErreurTelechargement, ErreurVerification) as e:
             print("❌ Échec du téléchargement : %s" % e)
             return False
@@ -1870,7 +1952,7 @@ def _executer_lean(args: argparse.Namespace) -> int:
               % (resultat.get("version"), resultat.get("rep")))
         return True
 
-    if args.init:
+    if args.init or getattr(args, "avec_lake", False):
         if not _installer_ou_erreur():
             return 1
         extension = getattr(args, "extension", None)
@@ -1892,6 +1974,14 @@ def _executer_lean(args: argparse.Namespace) -> int:
     if args.version:
         if manager.est_installee():
             print("Lean %s" % manager.version)
+            if manager.lake_installe():
+                try:
+                    from .toolchain.validate import valider_lake
+                    info_lake = valider_lake(manager.rep_install)
+                    print(info_lake["version"])
+                except ErreurValidation:
+                    print("Lake : installation incomplète "
+                          "(phi lean --init --avec-lake)")
         else:
             print("toolchain absente (phi lean --init)")
         version_projet, chemin_tc = None, None
@@ -1908,6 +1998,130 @@ def _executer_lean(args: argparse.Namespace) -> int:
         print(manager.rep_install)
         return 0
 
+    args_lake = getattr(args, "lake", None)
+    if args_lake is not None:
+        return _executer_lake_cmd(manager, args_lake, args.timeout)
+
+    # ── migration entre versions ──────────────────────────
+
+    if getattr(args, "versions", False):
+        installees = gestionnaire.versions_installees()
+        active = gestionnaire.version_active()
+        if not installees:
+            print("Aucune toolchain installée (phi lean --init)")
+        for info in installees:
+            marque = " ← active" if info["version"] == active else ""
+            natif = " (+natif)" if info.get("natif") else ""
+            print("Lean %s%s%s : %s"
+                  % (info["version"], natif, marque, info["rep"]))
+        return 0
+
+    if getattr(args, "active", False):
+        active = gestionnaire.version_active()
+        if active:
+            print("Lean %s" % active)
+        else:
+            print("aucune version active (phi lean --init)")
+        return 0
+
+    if getattr(args, "migrer", None):
+        cible = args.migrer
+        try:
+            from .toolchain.version import normaliser_version as _norm
+            cible_norm = _norm(cible)
+        except Exception:
+            cible_norm = cible.strip()
+        # Projets impactés : détection seule, jamais de migration auto.
+        try:
+            impactes = gestionnaire.projets_utilisant(cible_norm, os.getcwd())
+        except Exception:
+            impactes = []
+        if impactes:
+            print("Projets demandant Lean %s sous %s :"
+                  % (cible_norm, os.getcwd()))
+            for p in impactes:
+                print("  - %s" % p["projet"])
+            print("(leurs lean-toolchain ne seront pas modifiés "
+                  "automatiquement)")
+
+        def _confirmer(v, taille):
+            if args.oui:
+                return True
+            print("Migration vers Lean %s : téléchargement de %.1f Mo requis."
+                  % (v, taille / 1e6))
+            try:
+                reponse = input("Confirmer ? [o/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAnnulé.")
+                return False
+            return reponse in ("o", "oui", "y", "yes")
+
+        try:
+            resultat = gestionnaire.migrer(
+                cible, progression=_afficher_progression,
+                raison="phi lean --migrer %s" % cible,
+                confirmer=_confirmer)
+        except VersionInconnue as e:
+            print("❌ %s" % e)
+            return 1
+        except MigrationImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        except TelechargementRefuse as e:
+            print("\n⛔ %s" % e)
+            return 3
+        except (ErreurTelechargement, ErreurVerification) as e:
+            print("❌ Échec du téléchargement : %s" % e)
+            return 1
+        except ErreurExtraction as e:
+            print("❌ Échec de l'extraction : %s" % e)
+            return 1
+        except ErreurValidation as e:
+            print("❌ Échec de la validation : %s" % e)
+            return 1
+        statut = resultat.get("statut")
+        if statut == "DEJA_ACTIVE":
+            print("Lean %s est déjà la version active." % cible_norm)
+        else:
+            print("Migration terminée : %s → %s%s"
+                  % (resultat.get("de") or "(aucune)",
+                     resultat.get("vers"),
+                     " (téléchargée)" if resultat.get("telechargee") else ""))
+        return 0
+
+    if getattr(args, "revenir", False):
+        try:
+            resultat = gestionnaire.revenir(
+                raison="phi lean --revenir")
+        except RollbackImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        print("Retour à Lean %s (était %s)."
+              % (resultat["vers"], resultat["de"]))
+        return 0
+
+    if getattr(args, "nettoyer", False):
+        installees = gestionnaire.versions_installees()
+        active = gestionnaire.version_active()
+        a_supprimer = [i for i in installees if i["version"] != active]
+        if not a_supprimer:
+            print("Rien à nettoyer.")
+            return 0
+        print("Versions à supprimer :")
+        for info in a_supprimer:
+            print("  - Lean %s : %s" % (info["version"], info["rep"]))
+        if not args.oui:
+            print("Relancez avec --oui pour confirmer la suppression.")
+            return 0
+        try:
+            resultat = gestionnaire.nettoyer(
+                confirmer=lambda lst: True)
+        except MigrationImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        print("Supprimées : %s" % ", ".join(resultat["supprimees"]))
+        return 0
+
     if getattr(args, "mathlib_version", False):
         from .toolchain import mathlib as _ml
         v = _ml.version_installee()
@@ -1916,6 +2130,83 @@ def _executer_lean(args: argparse.Namespace) -> int:
         else:
             print("Mathlib non installée (phi lean --update-mathlib)")
         return 0
+
+    if getattr(args, "install_mathlib", False):
+        from .toolchain import mathlib_download as _mld
+        from .toolchain import mathlib as _ml
+        jobs = getattr(args, "jobs", None) or _mld.DEFAUT_JOBS
+        miroir_force = getattr(args, "miroir", None)
+
+        print("=== Téléchargeur Mathlib rapide ===")
+        # 1. Sélection du miroir.
+        if miroir_force:
+            base = miroir_force
+            print("Miroir forcé : %s" % base)
+        else:
+            print("Sélection du miroir le plus rapide…")
+            classes = _mld.selection_miroir()
+            for nom, url, lat in classes:
+                statut = ("%.3fs" % lat) if lat is not None else "injoignable"
+                print("  %s : %s" % (nom, statut))
+            base = _mld.meilleur_miroir()
+            if not base:
+                print("❌ Aucun miroir joignable.")
+                return 1
+            print("Miroir retenu : %s" % base)
+
+        # 2. Liste des fichiers à télécharger.
+        liste_urls = getattr(args, "liste_urls", None)
+        if not liste_urls:
+            print("")
+            print("Le calcul des hashs .ltar requiert l'extension Lean/ complète")
+            print("(phi lean --init --extension lean) puis lake exe cache get.")
+            print("")
+            print("Utilisation :")
+            print("  phi lean --install-mathlib --liste-urls urls.txt")
+            print("    où urls.txt contient une URL par ligne :")
+            print("    https://cache.mathlib.org/mathlib4-master/f/<hash>.ltar")
+            print("")
+            print("Le téléchargeur parallèle est prêt dans")
+            print("phi_complexity/toolchain/mathlib_download.py :")
+            print("  - %d connexions parallèles (max %d)" % (jobs, _mld.MAX_JOBS))
+            print("  - reprise sur interruption (Range)")
+            print("  - vérification SHA256, saut si déjà en cache")
+            return 0
+
+        # 3. Téléchargement parallèle depuis la liste.
+        import os as _os
+        dest_dir = (getattr(args, "dest_mathlib", None)
+                    or _os.path.expanduser("~/.cache/phi-complexity/mathlib"))
+        _os.makedirs(dest_dir, exist_ok=True)
+        with open(liste_urls, "r", encoding="utf-8") as f:
+            urls = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        print("Fichiers à télécharger : %d" % len(urls))
+        fichiers = []
+        for u in urls:
+            nom = u.rstrip("/").split("/")[-1]
+            fichiers.append({"url": u,
+                             "destination": _os.path.join(dest_dir, nom)})
+        total = len(fichiers)
+
+        def _prog(termines, total_f, en_cours):
+            print("  [%d/%d] %s" % (termines, total_f,
+                                    (en_cours or "").split("/")[-1]),
+                  flush=True)
+
+        resultat = _mld.telecharger_lot(fichiers, jobs=jobs,
+                                        progression_globale=_prog)
+        duree = resultat["duree_s"]
+        mo = resultat["octets_totaux"] / 1e6
+        debit = mo / duree if duree > 0 else 0
+        print("")
+        print("Téléchargés : %d, en cache : %d, échecs : %d"
+              % (len(resultat["reussis"]), len(resultat["en_cache"]),
+                 len(resultat["echecs"])))
+        print("Volume : %.1f Mo en %.1f s (%.1f Mo/s)"
+              % (mo, duree, debit))
+        for e in resultat["echecs"][:10]:
+            print("  ❌ %s : %s" % (e["fichier"], e["erreur"]))
+        return 1 if resultat["echecs"] else 0
 
     if getattr(args, "update_mathlib", False):
         from .toolchain import mathlib as _ml
@@ -1948,8 +2239,10 @@ def _executer_lean(args: argparse.Namespace) -> int:
 
     fichier = getattr(args, "fichier", None)
     if fichier is None:
-        print("Usage : phi lean [--init|--version|--ou] [fichier.lean] "
-              "[--exec] [--timeout N]")
+        print("Usage : phi lean [--init [--avec-lake] | --version | --ou] "
+              "[fichier.lean] [--exec] [--timeout N]\n"
+              "        phi lean lake [--help | new <nom> | build | ...] "
+              "(projets lakefile.toml)")
         return 2
 
     try:
@@ -1993,6 +2286,12 @@ def _executer_lean(args: argparse.Namespace) -> int:
 def main():
     """Point d'entrée principal. Délègue à des fonctions spécialisées."""
     parser = _construire_parseur()
+    # Sucre syntaxique : `phi lean lake <args>` → `phi lean --lake <args>`.
+    # (Un positionnel REMAINDER après `fichier` avalerait les options
+    # existantes comme `--exec` ; la réécriture pré-parse l'évite.)
+    _argv = sys.argv[1:]
+    if len(_argv) >= 2 and _argv[0] == "lean" and _argv[1] == "lake":
+        sys.argv = [sys.argv[0], "lean", "--lake"] + _argv[2:]
     args = parser.parse_args()
 
     if not args.commande:

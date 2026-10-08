@@ -10,6 +10,12 @@ Contraintes :
 - aucun téléchargement pendant les tests unitaires (mocker `telecharger`) ;
 - travail local uniquement, jamais de push (règle Tomy).
 
+Options :
+- `installer(avec_natif=True)` : kit natif leanc (+575 Mo).
+- `installer(avec_lake=True)` : Lake, le gestionnaire de projets
+  (`phi lean lake ...`, +34 Mo, projets lakefile.toml uniquement —
+  voir MOTIFS_LAKE dans extract.py pour la limite documentée).
+
 Statuts typés : ce module lève des exceptions typées, jamais de booléen nu.
 """
 
@@ -21,10 +27,12 @@ from .manager import (
     ErreurTelechargement,
     ErreurValidation,
     ErreurVerification,
+    LakeAbsent,
+    LakeConfigNonSupportee,
     ToolchainAbsente,
     ToolchainManager,
 )
-from .extract import MOTIFS_EXTENSION_LEAN, MOTIFS_EXTENSION_STD, MOTIFS_NATIFS
+from .extract import MOTIFS_EXTENSION_LEAN, MOTIFS_EXTENSION_STD, MOTIFS_LAKE, MOTIFS_NATIFS
 from .manifeste import (
     NOM_MANIFESTE_FICHIERS,
     generer_manifeste,
@@ -36,7 +44,7 @@ from .delta import (
     fichiers_a_extraire,
     resumer_delta,
 )
-from .validate import valider_extension, valider_natif
+from .validate import valider_extension, valider_lake, valider_natif
 from .mathlib import (
     CacheExpire,
     ErreurMathlib,
@@ -50,9 +58,28 @@ from .mathlib import (
     plan_mise_a_jour,
     tag_pour_lean,
     url_base_cache,
+)
+from .mathlib_download import (
+    DEFAUT_JOBS,
+    MAX_JOBS,
+    ErreurTelechargement,
+    StatutTelechargement,
+    meilleur_miroir,
+    selection_miroir,
+    telecharger_fichier,
+    telecharger_lot,
+)
+from .mathlib import (
     url_marqueur,
     verifier_feu_vert,
     version_installee,
+)
+from .migration import (
+    GestionnaireVersions,
+    MigrationImpossible,
+    RollbackImpossible,
+    VersionInconnue,
+    manifeste_pour_version,
 )
 from .version import (
     NOM_FICHIER as NOM_FICHIER_LEAN_TOOLCHAIN,
@@ -70,6 +97,7 @@ __all__ = [
     "MANIFESTE_DEFAUT",
     "MOTIFS_EXTENSION_LEAN",
     "MOTIFS_EXTENSION_STD",
+    "MOTIFS_LAKE",
     "MOTIFS_NATIFS",
     "CacheExpire",
     "ErreurExtraction",
@@ -79,12 +107,18 @@ __all__ = [
     "ErreurValidation",
     "ErreurVerification",
     "FormatLeanToolchainInvalide",
+    "GestionnaireVersions",
+    "LakeAbsent",
+    "LakeConfigNonSupportee",
+    "MigrationImpossible",
     "NOM_FICHIER_LEAN_TOOLCHAIN",
     "NOM_MANIFESTE_FICHIERS",
+    "RollbackImpossible",
     "STATUTS_DELTA",
     "TelechargementRefuse",
     "ToolchainAbsente",
     "ToolchainManager",
+    "VersionInconnue",
     "VersionIntrouvable",
     "VersionNonSupportee",
     "analyser_contenu",
@@ -96,6 +130,7 @@ __all__ = [
     "generer_manifeste",
     "lire_manifeste",
     "lire_version_projet",
+    "manifeste_pour_version",
     "marquer_installee",
     "normaliser_version",
     "plan_mise_a_jour",
@@ -103,8 +138,17 @@ __all__ = [
     "tag_pour_lean",
     "trouver_lean_toolchain",
     "url_base_cache",
+    "DEFAUT_JOBS",
+    "MAX_JOBS",
+    "ErreurTelechargement",
+    "StatutTelechargement",
+    "meilleur_miroir",
+    "selection_miroir",
+    "telecharger_fichier",
+    "telecharger_lot",
     "url_marqueur",
     "valider_extension",
+    "valider_lake",
     "valider_natif",
     "verifier_feu_vert",
     "version_installee",
