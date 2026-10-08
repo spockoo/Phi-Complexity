@@ -8,6 +8,12 @@ Protocole (pré-enregistré) :
 4. valider (`bin/lean --version` contient la version attendue) ;
 5. publier (marqueur `.valide` avec le SHA256).
 
+Option `avec_natif=True` : extrait en plus le kit natif (MOTIFS_NATIFS :
+leanc + clang embarqué + ld.lld + archives statiques + en-têtes C) et le
+valide (`leanc --version`). L'extraction est additive : un appel ultérieur
+avec `avec_natif=True` sur une installation minimale existante n'ajoute
+que le kit natif (pas de re-téléchargement).
+
 Le marqueur `.valide` rend l'installation idempotente : un second appel
 ne retélécharge rien. Supprimer le répertoire de cache force la
 réinstallation complète (reprise propre).
@@ -21,14 +27,19 @@ import json
 import os
 import subprocess
 
+from .delta import calculer_delta, fichiers_a_extraire, resumer_delta
 from .download import ErreurTelechargement, ErreurVerification, telecharger
 from .extract import (
     ErreurExtraction,
     MOTIFS_EXTENSION_LEAN,
     MOTIFS_EXTENSION_STD,
+    MOTIFS_MINIMAUX,
+    MOTIFS_NATIFS,
+    extraire_fichiers,
     extraire_minimal,
 )
-from .validate import ErreurValidation, valider, valider_extension
+from .manifeste import generer_manifeste, lire_manifeste
+from .validate import ErreurValidation, valider, valider_extension, valider_natif
 from .version import (
     FormatLeanToolchainInvalide,
     VersionNonSupportee,
@@ -119,21 +130,51 @@ class ToolchainManager:
         """Valeur à mettre dans LEAN_PATH pour charger Init/."""
         return os.path.join(self.rep_install, "lib", "lean")
 
+    def _natif_marque(self):
+        """Lit le drapeau `natif` du marqueur .valide (False si absent)."""
+        try:
+            with open(self.chemin_marqueur, "r", encoding="utf-8") as f:
+                contenu = json.load(f)
+            return bool(contenu.get("natif"))
+        except (OSError, ValueError):
+            return False
+
+    def natif_installe(self):
+        """True ssi le kit natif (bin/leanc) est installé et marqué."""
+        if not os.path.isfile(os.path.join(self.rep_install, "bin", "leanc")):
+            return False
+        return self._natif_marque()
+
+    def chemin_leanc(self):
+        """Chemin du linker natif leanc. Lève ToolchainAbsente si non installé."""
+        if not self.natif_installe():
+            raise ToolchainAbsente(
+                "kit natif Lean %s absent — appelez installer(avec_natif=True) "
+                "d'abord" % self.version
+            )
+        return os.path.join(self.rep_install, "bin", "leanc")
+
     # ── installation ─────────────────────────────────────
 
-    def installer(self, progression=None):
+    def installer(self, progression=None, avec_natif=False):
         """Installe la toolchain (idempotent). Retourne un dict de statut.
 
         Args:
             progression: callable optionnel(phase, info) où phase ∈
                 {"deja_installee", "telechargement", "extraction",
                  "validation", "terminee"}.
+            avec_natif: si True, extrait aussi le kit natif (leanc +
+                clang embarqué + ld.lld + archives statiques + en-têtes C ;
+                +575 Mo) et le valide. L'extraction est additive : sur une
+                installation minimale existante, seul le kit natif est
+                ajouté (pas de re-téléchargement).
         """
         def _sig(phase, info=None):
             if progression is not None:
                 progression(phase, info or {})
 
-        if self.est_installee():
+        deja = self.est_installee()
+        if deja and (not avec_natif or self.natif_installe()):
             _sig("deja_installee", {"rep": self.rep_install})
             return {
                 "statut": "DEJA_INSTALLEE",
@@ -142,44 +183,58 @@ class ToolchainManager:
             }
 
         os.makedirs(self.rep_install, exist_ok=True)
-        url = _url_effective(self.manifeste)
 
-        _sig("telechargement", {"url": url})
-        telecharger(
-            url,
-            self.chemin_archive,
-            self.manifeste["sha256"],
-            progression=lambda n: _sig("telechargement", {"octets": n}),
-        )
+        if not deja:
+            url = _url_effective(self.manifeste)
 
-        _sig("extraction", {"archive": self.chemin_archive})
+            _sig("telechargement", {"url": url})
+            telecharger(
+                url,
+                self.chemin_archive,
+                self.manifeste["sha256"],
+                progression=lambda n: _sig("telechargement", {"octets": n}),
+            )
+
+        _sig("extraction", {"archive": self.chemin_archive,
+                            "natif": avec_natif})
         extraire_minimal(
             self.chemin_archive,
             self.rep_install,
+            motifs=(MOTIFS_MINIMAUX + MOTIFS_NATIFS) if avec_natif else None,
             progression=lambda nf, no: _sig(
-                "extraction", {"fichiers": nf, "octets": no}
+                "extraction", {"fichiers": nf, "octets": no,
+                               "natif": avec_natif}
             ),
         )
 
         _sig("validation", {})
         resultat = valider(self.rep_install, self.version)
+        natif_final = avec_natif or self._natif_marque()
+        resultat_natif = None
+        if avec_natif:
+            resultat_natif = valider_natif(self.rep_install)
 
         with open(self.chemin_marqueur, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "version": self.version,
                     "sha256": self.manifeste["sha256"],
+                    "natif": natif_final,
                     "valide_par": resultat["sortie"],
                 },
                 f,
             )
-        _sig("terminee", {"rep": self.rep_install})
-        return {
+        _sig("terminee", {"rep": self.rep_install, "natif": natif_final})
+        statut = {
             "statut": "INSTALLEE",
             "rep": self.rep_install,
             "version": self.version,
             "chemin_lean": resultat["chemin_lean"],
+            "natif": natif_final,
         }
+        if resultat_natif is not None:
+            statut["chemin_leanc"] = resultat_natif["chemin_leanc"]
+        return statut
 
     # ── version de projet (lean-toolchain) ───────────────────
 
@@ -343,6 +398,186 @@ class ToolchainManager:
             "extension": nom,
             "module_racine": meta["module_racine"],
         }
+
+    # ── mise à jour par delta ────────────────────────────────
+
+    def plan_mise_a_jour(self, nouveau_manifeste):
+        """Calcule le delta vers une nouvelle version SANS télécharger.
+
+        Args:
+            nouveau_manifeste: dict avec "version", "url", "sha256"
+                (manifeste de release, pas par fichier).
+
+        Returns:
+            dict: {"version_actuelle": ..., "version_cible": ...,
+                   "url": ..., "sha256": ..., "taille_tarball": ...}
+            Le delta par fichier ne peut être calculé qu'après
+            téléchargement (les hashes par fichier ne sont pas publiés).
+
+        Note honnête : le tarball complet doit être téléchargé — les
+        releases Lean ne fournissent pas de delta officiel. Le gain du
+        système de patch est sur l'extraction (I/O disque) et la
+        traçabilité, pas sur la bande passante.
+        """
+        return {
+            "version_actuelle": self.version if self.est_installee() else None,
+            "version_cible": nouveau_manifeste["version"],
+            "url": nouveau_manifeste["url"],
+            "sha256": nouveau_manifeste["sha256"],
+            "taille_tarball": nouveau_manifeste.get("taille_octets_approx"),
+            "note": (
+                "Le tarball complet sera téléchargé (pas de delta officiel). "
+                "Seule l'extraction sera sélective."
+            ),
+        }
+
+    def mettre_a_jour(self, nouveau_manifeste, progression=None):
+        """Met à jour vers une nouvelle version avec extraction sélective.
+
+        Protocole :
+        1. Télécharge le nouveau tarball (complet — pas de delta officiel).
+        2. Extrait le minimal vers un répertoire temporaire.
+        3. Génère le manifeste par fichier de la nouvelle version.
+        4. Calcule le delta avec le manifeste de la version installée.
+        5. Crée le nouveau répertoire de version :
+           - fichiers inchangés : lien physique depuis l'ancienne version
+             (zéro copie, instantané) ;
+           - fichiers ajoutés/modifiés : copie depuis l'extraction temp.
+        6. Supprime les fichiers obsolètes (non repris).
+        7. Valide et marque la nouvelle version.
+
+        L'ancienne version reste intacte (rollback possible par simple
+        changement de répertoire).
+
+        Args:
+            nouveau_manifeste: dict avec "version", "url", "sha256".
+            progression: callable optionnel(phase, info).
+
+        Returns:
+            dict: {"statut": "MIS_A_JOUR", "delta": {...}, ...}.
+        """
+        import shutil
+        import tempfile
+
+        def _sig(phase, info=None):
+            if progression is not None:
+                progression(phase, info or {})
+
+        ancienne_version = self.version if self.est_installee() else None
+        nouvel_version = nouveau_manifeste["version"]
+        url = nouveau_manifeste["url"]
+        sha256 = nouveau_manifeste["sha256"]
+
+        # Si déjà à jour, ne rien faire.
+        if ancienne_version == nouvel_version and self.est_installee():
+            _sig("deja_a_jour", {"version": nouvel_version})
+            return {"statut": "DEJA_A_JOUR", "version": nouvel_version}
+
+        _sig("telechargement", {"url": url, "version": nouvel_version})
+        rep_temp = tempfile.mkdtemp(prefix="phi-lean-update-")
+        archive_temp = os.path.join(rep_temp, "lean.tar.zst")
+        try:
+            telecharger(
+                url, archive_temp, sha256,
+                progression=lambda n: _sig("telechargement", {"octets": n}),
+            )
+
+            # Extraire le nouveau minimal vers un temp.
+            _sig("extraction_nouvelle", {"version": nouvel_version})
+            rep_nouveau = os.path.join(rep_temp, "nouveau")
+            extraire_minimal(
+                archive_temp, rep_nouveau,
+                progression=lambda nf, no: _sig(
+                    "extraction_nouvelle", {"fichiers": nf, "octets": no}),
+            )
+
+            # Manifeste de la nouvelle version.
+            _sig("manifeste", {})
+            manif_nouveau = generer_manifeste(rep_nouveau, nouvel_version)
+
+            # Delta avec l'ancien.
+            _sig("delta", {})
+            if ancienne_version and self.est_installee():
+                manif_ancien = lire_manifeste(self.rep_install)
+                ancien_rep = self.rep_install
+            else:
+                manif_ancien = None
+                ancien_rep = None
+            delta = calculer_delta(manif_ancien, manif_nouveau)
+            _sig("delta", {"resume": resumer_delta(delta)})
+
+            # Nouveau répertoire de version.
+            nouveau_rep = os.path.join(
+                self.cache_dir, "%s-mini" % nouvel_version)
+            os.makedirs(nouveau_rep, exist_ok=True)
+
+            # Fichiers inchangés : lien physique depuis l'ancien (rapide).
+            # Ajoutés/modifiés : copie depuis l'extraction temp.
+            _sig("application", {})
+            n_lies = 0
+            n_copies = 0
+            tous_nouveaux = set(manif_nouveau["fichiers"].keys())
+            a_extraire = set(fichiers_a_extraire(delta))
+            for relatif in sorted(tous_nouveaux):
+                dst = os.path.join(nouveau_rep, relatif)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if relatif in a_extraire:
+                    # Ajouté ou modifié : depuis l'extraction temp.
+                    src = os.path.join(rep_nouveau, relatif)
+                    shutil.copy2(src, dst)
+                    n_copies += 1
+                elif ancien_rep:
+                    # Inchangé : lien physique (pas de copie).
+                    src = os.path.join(ancien_rep, relatif)
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        try:
+                            os.link(src, dst)
+                            n_lies += 1
+                        except OSError:
+                            # Filesystem sans hardlinks : copie.
+                            shutil.copy2(src, dst)
+                            n_copies += 1
+            _sig("application", {"lies": n_lies, "copies": n_copies})
+
+            # Manifeste par fichier dans la nouvelle installation.
+            generer_manifeste(nouveau_rep, nouvel_version)
+
+            # Valider et marquer.
+            _sig("validation", {})
+            resultat = valider(nouveau_rep, nouvel_version)
+            marqueur = os.path.join(nouveau_rep, ".valide")
+            with open(marqueur, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version": nouvel_version,
+                        "sha256": sha256,
+                        "valide_par": resultat["sortie"],
+                        "mis_a_jour_depuis": ancienne_version,
+                    },
+                    f,
+                )
+
+            # Basculer le manager vers la nouvelle version.
+            self.manifeste = nouveau_manifeste
+            self.version = nouvel_version
+            self.rep_install = nouveau_rep
+            self.chemin_archive = os.path.join(nouveau_rep, "lean.tar.zst")
+            self.chemin_marqueur = marqueur
+            # Conserver l'archive pour les extensions futures.
+            shutil.copy2(archive_temp,
+                         os.path.join(nouveau_rep, "lean.tar.zst"))
+
+            _sig("terminee", {"version": nouvel_version, "delta": delta})
+            return {
+                "statut": "MIS_A_JOUR",
+                "de_version": ancienne_version,
+                "vers_version": nouvel_version,
+                "delta": delta,
+                "fichiers_lies": n_lies,
+                "fichiers_copies": n_copies,
+            }
+        finally:
+            shutil.rmtree(rep_temp, ignore_errors=True)
 
     # ── usage ────────────────────────────────────────────
 

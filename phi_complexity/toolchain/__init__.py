@@ -24,8 +24,19 @@ from .manager import (
     ToolchainAbsente,
     ToolchainManager,
 )
-from .extract import MOTIFS_EXTENSION_LEAN, MOTIFS_EXTENSION_STD
-from .validate import valider_extension
+from .extract import MOTIFS_EXTENSION_LEAN, MOTIFS_EXTENSION_STD, MOTIFS_NATIFS
+from .manifeste import (
+    NOM_MANIFESTE_FICHIERS,
+    generer_manifeste,
+    lire_manifeste,
+)
+from .delta import (
+    STATUTS_DELTA,
+    calculer_delta,
+    fichiers_a_extraire,
+    resumer_delta,
+)
+from .validate import valider_extension, valider_natif
 from .mathlib import (
     CacheExpire,
     ErreurMathlib,
@@ -59,6 +70,7 @@ __all__ = [
     "MANIFESTE_DEFAUT",
     "MOTIFS_EXTENSION_LEAN",
     "MOTIFS_EXTENSION_STD",
+    "MOTIFS_NATIFS",
     "CacheExpire",
     "ErreurExtraction",
     "ErreurMathlib",
@@ -68,6 +80,8 @@ __all__ = [
     "ErreurVerification",
     "FormatLeanToolchainInvalide",
     "NOM_FICHIER_LEAN_TOOLCHAIN",
+    "NOM_MANIFESTE_FICHIERS",
+    "STATUTS_DELTA",
     "TelechargementRefuse",
     "ToolchainAbsente",
     "ToolchainManager",
@@ -75,17 +89,23 @@ __all__ = [
     "VersionNonSupportee",
     "analyser_contenu",
     "cache_disponible",
+    "calculer_delta",
     "chemin_cache_mathlib",
     "dernier_tag_stable",
+    "fichiers_a_extraire",
+    "generer_manifeste",
+    "lire_manifeste",
     "lire_version_projet",
     "marquer_installee",
     "normaliser_version",
     "plan_mise_a_jour",
+    "resumer_delta",
     "tag_pour_lean",
     "trouver_lean_toolchain",
     "url_base_cache",
     "url_marqueur",
     "valider_extension",
+    "valider_natif",
     "verifier_feu_vert",
     "version_installee",
 ]

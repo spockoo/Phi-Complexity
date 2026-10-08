@@ -165,6 +165,81 @@ def _est_retenu(chemin_relatif, motifs=None):
     return any(fnmatch.fnmatch(chemin_relatif, m) for m in motifs)
 
 
+def extraire_fichiers(archive_tar_zst, dest_dir, fichiers, progression=None):
+    """Extrait une liste explicite de fichiers d'un .tar.zst vers `dest_dir`.
+
+    Utilisé pour appliquer un delta : seuls les fichiers ajoutés/modifiés
+    sont extraits, pas toute l'archive.
+
+    Args:
+        archive_tar_zst: chemin du fichier .tar.zst (déjà vérifié).
+        dest_dir: répertoire de destination (créé si absent).
+        fichiers: liste de chemins relatifs (ex. ["bin/lean",
+            "lib/lean/Init.olean"]) — comparaison exacte, pas de motifs.
+        progression: callable optionnel(fichiers_extraits, octets_extraits).
+
+    Returns:
+        dict: {"dest": dest_dir, "fichiers": n, "octets": n}.
+
+    Raises:
+        ErreurExtraction: décompression ou lecture impossible.
+    """
+    cibles = set(fichiers)
+    os.makedirs(dest_dir, exist_ok=True)
+    n_fichiers = 0
+    n_octets = 0
+    try:
+        with open(archive_tar_zst, "rb") as fzst:
+            dctx = zstandard.ZstdDecompressor()
+            flux = dctx.stream_reader(fzst)
+            with tarfile.open(fileobj=flux, mode="r|") as tar:
+                for membre in tar:
+                    relatif = _sans_racine(membre.name)
+                    if not relatif or relatif not in cibles:
+                        continue
+                    cible = os.path.join(dest_dir, relatif)
+                    if not _dans_dest(dest_dir, cible):
+                        continue
+                    os.makedirs(os.path.dirname(cible), exist_ok=True)
+                    if membre.issym():
+                        if not _lien_sain(membre.linkname, dest_dir, cible):
+                            continue
+                        if os.path.lexists(cible):
+                            os.unlink(cible)
+                        os.symlink(membre.linkname, cible)
+                        n_fichiers += 1
+                        if progression is not None:
+                            progression(n_fichiers, n_octets)
+                        continue
+                    if not membre.isfile():
+                        continue
+                    extrait = tar.extractfile(membre)
+                    if extrait is None:
+                        continue
+                    with open(cible, "wb") as fout:
+                        while True:
+                            bloc = extrait.read(1024 * 1024)
+                            if not bloc:
+                                break
+                            fout.write(bloc)
+                            n_octets += len(bloc)
+                    if membre.mode & 0o111:
+                        st = os.stat(cible)
+                        os.chmod(cible, st.st_mode | 0o111)
+                    n_fichiers += 1
+                    if progression is not None:
+                        progression(n_fichiers, n_octets)
+                    # Sortie anticipée : tous les fichiers trouvés.
+                    if n_fichiers >= len(cibles):
+                        break
+    except Exception as exc:
+        raise ErreurExtraction(
+            "extraction impossible de %s : %s" % (archive_tar_zst, exc)
+        ) from exc
+
+    return {"dest": dest_dir, "fichiers": n_fichiers, "octets": n_octets}
+
+
 def _dans_dest(dest_dir, chemin):
     """True ssi `chemin` (déjà normalisé) reste sous `dest_dir`."""
     return os.path.commonpath(
