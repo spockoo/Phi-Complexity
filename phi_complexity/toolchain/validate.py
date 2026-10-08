@@ -225,3 +225,81 @@ def valider_extension(repertoire, module_racine, timeout_s=600):
             % (module_racine, proc.returncode, sortie.strip()[:800])
         )
     return {"module": module_racine, "chemin_lean": binaire}
+
+
+# ── Lake (chantier 2, 2026-10-08) ────────────────────────────
+
+# Pièces critiques sans lesquelles `lake new` / `lake build` échouent
+# (déterminées empiriquement, voir MOTIFS_LAKE dans extract.py).
+_FICHIERS_LAKE_CRITIQUES = [
+    "lib/lean/libLake_shared.so",
+    "lib/lean/Lake.olean",
+    "lib/lean/Lake/DSL/Config.olean",
+    "include/lean/lean.h",
+]
+
+
+def valider_lake(repertoire, timeout_s=60):
+    """Valide l'installation optionnelle de Lake.
+
+    Critères (pré-enregistrés) :
+    1. `bin/lake` existe et est exécutable ;
+    2. `bin/lake --version` retourne un code 0 et mentionne Lake ;
+    3. les pièces critiques sont présentes (libLake_shared.so,
+       Lake.olean, un olean du DSL, lean.h).
+
+    Args:
+        repertoire: répertoire racine de l'installation (contient bin/).
+        timeout_s: délai max pour `lake --version`.
+
+    Returns:
+        dict: {"chemin_lake": ..., "version": ..., "sortie": ...}.
+
+    Raises:
+        ErreurValidation: critère non satisfait (détail dans le message).
+    """
+    binaire = os.path.join(repertoire, "bin", "lake")
+    if not os.path.isfile(binaire):
+        raise ErreurValidation("binaire lake absent : %s" % binaire)
+    if not os.access(binaire, os.X_OK):
+        raise ErreurValidation("binaire lake non exécutable : %s" % binaire)
+
+    for relatif in _FICHIERS_LAKE_CRITIQUES:
+        chemin = os.path.join(repertoire, relatif)
+        if not os.path.isfile(chemin):
+            raise ErreurValidation(
+                "pièce lake manquante : %s" % chemin
+            )
+
+    try:
+        proc = subprocess.run(
+            [binaire, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ErreurValidation(
+            "`lake --version` a dépassé %ds" % timeout_s
+        ) from exc
+    except OSError as exc:
+        raise ErreurValidation(
+            "exécution impossible de %s : %s" % (binaire, exc)
+        ) from exc
+
+    sortie = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        raise ErreurValidation(
+            "`lake --version` a retourné %d : %s"
+            % (proc.returncode, sortie.strip()[:500])
+        )
+    if "Lake version" not in sortie:
+        raise ErreurValidation(
+            "sortie inattendue : %r ne contient pas 'Lake version'"
+            % sortie.strip()[:200]
+        )
+    return {
+        "chemin_lake": binaire,
+        "version": sortie.strip().splitlines()[0] if sortie.strip() else "",
+        "sortie": sortie.strip()[:200],
+    }

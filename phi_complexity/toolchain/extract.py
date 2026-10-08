@@ -11,6 +11,14 @@ statiques + en-têtes C) s'extrait en option via
 les liens symboliques requis (libc++.so.1, ...) sont recréés avec garde
 anti-traversal.
 
+Lake (MOTIFS_LAKE, chantier 2, 2026-10-08) s'extrait en option via
+``extraire_minimal(archive, dest, motifs=MOTIFS_LAKE)`` puis
+``creer_liens_lake(dest)`` : `lake new` + `lake build` complets
+(y compris exécutables natifs) pour les projets `lakefile.toml`.
+Limite documentée : les projets `lakefile.lean` exigent `import Lake`,
+qui tire l'arbre `Lean.*` (1,33 Go) — incompatible avec la philosophie
+mini (voir note dans MOTIFS_LAKE).
+
 Le premier composant du chemin dans l'archive (ex. `lean-4.34.0-linux/`)
 est ignoré : on reconstruit l'arborescence `bin/`, `lib/` à la racine de
 la destination.
@@ -152,6 +160,118 @@ MOTIFS_EXTENSION_STD = _motifs_bibliotheque("Std")
 # "lean" inclut "std" : la fermeture de `import Lean` contient les 489
 # modules Std (vérifié par analyse des imports de src/lean).
 MOTIFS_EXTENSION_LEAN = _motifs_bibliotheque("Lean") + MOTIFS_EXTENSION_STD
+
+
+# ── Lake : gestionnaire de projets (chantier 2, 2026-10-08) ────
+# Mesures réelles (archive lean-4.34.0-linux.tar.zst, 2026-10-08) :
+# 174 fichiers, 35 861 649 octets (~34,2 Mo), validés empiriquement :
+# `lake new` + `lake build` complets (8/8, exécutable natif construit
+# ET exécuté) sur projet jouet `lakefile.toml`.
+#
+# Contenu :
+# - bin/lake (13 840 o) : exécutable natif (RUNPATH $ORIGIN/../lib/lean) ;
+# - lib/lean/libLake_shared.so (12,5 Mo) : le code de Lake ;
+# - lib/lean/Lake.olean + lib/lean/Lake/**/*.olean (161 fichiers, 17,8 Mo) :
+#   UNIQUEMENT la variante .olean nue. Les .olean.private (64,6 Mo),
+#   .olean.server et .ilean sont volontairement exclus (tests empiriques :
+#   `lake new` + `lake build` TOML passent sans eux) ;
+# - include/lean/*.h (6 en-têtes, ~0,2 Mo) : requis par l'étape C
+#   (`cc ... -I <sysroot>/include`, `fatal error: lean/lean.h` sinon) ;
+# - lib/libc++.a, libc++abi.a, libunwind.a, libgmp.a, libuv.a (5,3 Mo) :
+#   archives vues par l'éditeur de liens via les symlinks de LIENS_LAKE.
+#
+# Édition de liens SANS les .a statiques Lean (libLean.a : 319 Mo !) :
+# creer_liens_lake() crée des symlinks libLean.so -> libleanshared.so etc.
+# Le .so de 233 Mo déjà présent dans le minimal exporte les symboles
+# requis (vérifié : exe construit et exécuté, "Hello, world!").
+# libStd.a est une archive vide (8 o) : aucun symbole Std n'est requis
+# par un exe sans dépendance Std ; si le kit natif est aussi installé,
+# sa vraie libStd.a (30 Mo) est conservée (pas d'écrasement).
+#
+# LIMITE HONNÊTE (mesurée, pas supposée) : les projets `lakefile.lean`
+# (dont le template `lake new <nom> std.lean`) NE fonctionnent PAS :
+# l'élaboration exige `import Lake`, qui tire transitivement l'arbre
+# `lib/lean/Lean/**` (1 217 modules, 1,33 Go mesurés : 851 Mo de
+# .olean.private + 308 Mo de .ir + 127 Mo de .olean + ...) — incompatible
+# avec la philosophie mini. Seuls les projets `lakefile.toml` (le défaut
+# de `lake new`) sont supportés. Le manager refuse explicitement un
+# dossier contenant lakefile.lean sans lakefile.toml (message clair).
+MOTIFS_LAKE = [
+    "bin/lake",
+    "lib/lean/libLake_shared.so",
+    "lib/lean/Lake.olean",
+    "lib/lean/LakeMain.olean",
+    # fnmatch : `*` traverse les `/`, donc `Lake/*.olean` couvre aussi
+    # `Lake/DSL/Config.olean`. Exclut .olean.private/.olean.server/.ilean
+    # (le motif se termine par `.olean`, pas par `.private`).
+    "lib/lean/Lake/*.olean",
+    "lib/lean/Lake/**/*.olean",
+    "include/lean/*.h",
+    "lib/libc++.a",
+    "lib/libc++abi.a",
+    "lib/libunwind.a",
+    "lib/libgmp.a",
+    "lib/libuv.a",
+]
+
+# Symlinks créés par creer_liens_lake() (chemin relatif -> cible).
+# Les 5 premiers redirigent l'édition de liens dynamique vers les .so
+# déjà présents dans le minimal ; les 5 derniers exposent les archives
+# tierces sous le -L <sysroot>/lib/lean qu'émet lake.
+LIENS_LAKE = {
+    "lib/lean/libLean.so": "libleanshared.so",
+    "lib/lean/libleancpp.so": "libleanshared.so",
+    "lib/lean/libInit.so": "libInit_shared.so",
+    "lib/lean/libleanrt.so": "libleanshared.so",
+    "lib/lean/libLake.so": "libLake_shared.so",
+    "lib/lean/libc++.a": "../libc++.a",
+    "lib/lean/libc++abi.a": "../libc++abi.a",
+    "lib/lean/libunwind.a": "../libunwind.a",
+    "lib/lean/libgmp.a": "../libgmp.a",
+    "lib/lean/libuv.a": "../libuv.a",
+}
+
+# Archive `ar` vide (en-tête magique seul) : satisfait `-lStd` quand
+# aucun symbole Std n'est réellement requis.
+_ARCHIVE_VIDE = b"!<arch>\n"
+
+
+def creer_liens_lake(dest_dir):
+    """Crée les symlinks et l'archive Std vide requis par `lake build`.
+
+    Idempotent et non destructif : ne crée un lien que s'il n'existe
+    rien à cet emplacement (ne jamais écraser la vraie libStd.a du kit
+    natif, par ex.). Lève ErreurExtraction si dest_dir est hors d'atteinte.
+
+    Returns:
+        dict: {"liens": n, "archives": n}.
+    """
+    if not os.path.isdir(dest_dir):
+        raise ErreurExtraction(
+            "répertoire de destination absent : %s" % dest_dir
+        )
+    n_liens = 0
+    for relatif, cible in LIENS_LAKE.items():
+        chemin = os.path.join(dest_dir, relatif)
+        if os.path.lexists(chemin):
+            continue
+        # Garde : le lien résolu doit rester sous dest_dir.
+        if not _lien_sain(cible, dest_dir, chemin):
+            raise ErreurExtraction(
+                "lien lake refusé (hors destination) : %s -> %s"
+                % (relatif, cible)
+            )
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+        os.symlink(cible, chemin)
+        n_liens += 1
+    n_archives = 0
+    chemin_std = os.path.join(dest_dir, "lib", "lean", "libStd.a")
+    if not os.path.lexists(chemin_std):
+        os.makedirs(os.path.dirname(chemin_std), exist_ok=True)
+        with open(chemin_std, "wb") as f:
+            f.write(_ARCHIVE_VIDE)
+        n_archives = 1
+    return {"liens": n_liens, "archives": n_archives}
 
 
 def _sans_racine(chemin):

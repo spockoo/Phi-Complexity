@@ -14,6 +14,14 @@ valide (`leanc --version`). L'extraction est additive : un appel ultérieur
 avec `avec_natif=True` sur une installation minimale existante n'ajoute
 que le kit natif (pas de re-téléchargement).
 
+Option `avec_lake=True` (chantier 2, 2026-10-08) : extrait en plus Lake
+(MOTIFS_LAKE : bin/lake + libLake_shared.so + oleans Lake + en-têtes C +
+archives tierces, ~34 Mo), crée les liens d'édition de liens
+(creer_liens_lake) et valide (`lake --version`). Additif également :
+`installer(avec_lake=True)` sur une installation existante n'ajoute que
+Lake. Limite : seuls les projets `lakefile.toml` sont supportés
+(`lakefile.lean` exigerait l'arbre Lean.*, 1,33 Go — voir extract.py).
+
 Le marqueur `.valide` rend l'installation idempotente : un second appel
 ne retélécharge rien. Supprimer le répertoire de cache force la
 réinstallation complète (reprise propre).
@@ -33,13 +41,21 @@ from .extract import (
     ErreurExtraction,
     MOTIFS_EXTENSION_LEAN,
     MOTIFS_EXTENSION_STD,
+    MOTIFS_LAKE,
     MOTIFS_MINIMAUX,
     MOTIFS_NATIFS,
+    creer_liens_lake,
     extraire_fichiers,
     extraire_minimal,
 )
 from .manifeste import generer_manifeste, lire_manifeste
-from .validate import ErreurValidation, valider, valider_extension, valider_natif
+from .validate import (
+    ErreurValidation,
+    valider,
+    valider_extension,
+    valider_lake,
+    valider_natif,
+)
 from .version import (
     FormatLeanToolchainInvalide,
     VersionNonSupportee,
@@ -66,7 +82,18 @@ class ToolchainAbsente(Exception):
     """Aucune toolchain installée et aucun téléchargement demandé."""
 
 
+class LakeAbsent(Exception):
+    """Lake n'est pas installé (option `avec_lake`, +34 Mo)."""
+
+
+class LakeConfigNonSupportee(Exception):
+    """Le dossier contient un lakefile.lean (non supporté par le mini)."""
+
+
 def _lire_manifeste(chemin=None):
+    if isinstance(chemin, dict):
+        # Manifeste construit en mémoire (ex. migration.manifeste_pour_version).
+        return chemin
     chemin = chemin or MANIFESTE_DEFAUT
     with open(chemin, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -154,27 +181,209 @@ class ToolchainManager:
             )
         return os.path.join(self.rep_install, "bin", "leanc")
 
+    # ── Lake (gestionnaire de projets, chantier 2) ──────────
+
+    def _lake_marque(self):
+        """Lit le drapeau `lake` du marqueur .valide (False si absent)."""
+        try:
+            with open(self.chemin_marqueur, "r", encoding="utf-8") as f:
+                contenu = json.load(f)
+            return bool(contenu.get("lake"))
+        except (OSError, ValueError):
+            return False
+
+    def lake_installe(self):
+        """True ssi Lake (bin/lake) est installé et marqué."""
+        if not os.path.isfile(os.path.join(self.rep_install, "bin", "lake")):
+            return False
+        return self._lake_marque()
+
+    def chemin_lake(self):
+        """Chemin du binaire lake. Lève LakeAbsent si non installé."""
+        if not self.lake_installe():
+            raise LakeAbsent(
+                "Lake non installé — appelez installer(avec_lake=True) "
+                "d'abord (ou `phi lean --init --avec-lake`)"
+            )
+        return os.path.join(self.rep_install, "bin", "lake")
+
+    def installer_lake(self, progression=None):
+        """Installe Lake seul (idempotent, sans re-téléchargement).
+
+        Extrait MOTIFS_LAKE depuis l'archive officielle déjà en cache,
+        crée les liens d'édition de liens (creer_liens_lake), puis valide
+        (`lake --version` + pièces critiques).
+
+        Args:
+            progression: callable optionnel(phase, info) où phase ∈
+                {"deja_installee", "telechargement", "extraction_lake",
+                 "validation_lake", "terminee"}.
+
+        Returns:
+            dict de statut (statut ∈ {"DEJA_INSTALLEE", "LAKE_INSTALLE"}).
+
+        Raises:
+            ToolchainAbsente: le binaire lean de base n'est pas installé.
+            ErreurExtraction: archive absente ou extraction impossible.
+            ErreurValidation: `lake --version` ne passe pas.
+        """
+        def _sig(phase, info=None):
+            if progression is not None:
+                progression(phase, info or {})
+
+        # Garde : la base doit être présente. On teste bin/lean (et non le
+        # marqueur .valide) car installer(avec_lake=True) appelle cette
+        # méthode AVANT d'écrire le marqueur.
+        if not os.path.isfile(os.path.join(self.rep_install, "bin", "lean")):
+            raise ToolchainAbsente(
+                "toolchain Lean %s absente — appelez installer() d'abord "
+                "(ou `phi lean --init`)" % self.version
+            )
+        if self.lake_installe():
+            _sig("deja_installee", {"rep": self.rep_install, "lake": True})
+            return {
+                "statut": "DEJA_INSTALLEE",
+                "rep": self.rep_install,
+                "lake": True,
+            }
+
+        # L'archive a pu disparaître du cache : la re-télécharger si besoin
+        # (miroir du comportement de installer_extension).
+        if not os.path.isfile(self.chemin_archive):
+            url = _url_effective(self.manifeste)
+            _sig("telechargement", {"url": url, "lake": True})
+            telecharger(
+                url,
+                self.chemin_archive,
+                self.manifeste["sha256"],
+                progression=lambda n: _sig(
+                    "telechargement", {"octets": n, "lake": True}),
+            )
+
+        _sig("extraction_lake", {"archive": self.chemin_archive})
+        extrait = extraire_minimal(
+            self.chemin_archive,
+            self.rep_install,
+            motifs=MOTIFS_LAKE,
+            progression=lambda nf, no: _sig(
+                "extraction_lake", {"fichiers": nf, "octets": no}),
+        )
+        liens = creer_liens_lake(self.rep_install)
+
+        _sig("validation_lake", {})
+        resultat = valider_lake(self.rep_install)
+
+        # Marquer l'option dans le marqueur principal (lu par
+        # lake_installe()). Lecture-modification-écriture : préserve les
+        # autres drapeaux (natif, valide_par...).
+        try:
+            with open(self.chemin_marqueur, "r", encoding="utf-8") as f:
+                marqueur = json.load(f)
+        except (OSError, ValueError):
+            marqueur = {"version": self.version,
+                        "sha256": self.manifeste["sha256"]}
+        marqueur["lake"] = True
+        with open(self.chemin_marqueur, "w", encoding="utf-8") as f:
+            json.dump(marqueur, f)
+
+        _sig("terminee", {"rep": self.rep_install, "lake": True})
+        return {
+            "statut": "LAKE_INSTALLE",
+            "rep": self.rep_install,
+            "version": self.version,
+            "chemin_lake": resultat["chemin_lake"],
+            "fichiers": extrait["fichiers"],
+            "octets": extrait["octets"],
+            "liens": liens["liens"],
+        }
+
+    def executer_lake(self, args, cwd=None, timeout_s=600):
+        """Exécute `lake <args>` dans `cwd` (défaut : répertoire courant).
+
+        L'environnement positionne LEAN_PATH (oleans Lake) et
+        LD_LIBRARY_PATH (les exécutables construits par `lake build`
+        chargent libleanshared.so dynamiquement — hérité par `lake exe`).
+
+        Refuse explicitement les dossiers contenant un `lakefile.lean`
+        sans `lakefile.toml` : l'élaboration exigerait `import Lake`, qui
+        tire l'arbre `lib/lean/Lean/**` (1,33 Go mesurés) — incompatible
+        avec la philosophie mini (voir MOTIFS_LAKE dans extract.py).
+
+        Args:
+            args: liste d'arguments lake (ex. ["new", "monprojet"]).
+            cwd: répertoire du projet (None = répertoire courant).
+            timeout_s: délai max d'exécution.
+
+        Returns:
+            {"rc": int, "stdout": str, "stderr": str, "ok": bool}.
+
+        Raises:
+            LakeAbsent: Lake n'est pas installé.
+            LakeConfigNonSupportee: lakefile.lean détecté sans lakefile.toml.
+        """
+        binaire = self.chemin_lake()
+        dossier = os.path.abspath(cwd or os.getcwd())
+        if os.path.isfile(os.path.join(dossier, "lakefile.lean")) \
+                and not os.path.isfile(
+                    os.path.join(dossier, "lakefile.toml")):
+            raise LakeConfigNonSupportee(
+                "lakefile.lean non supporté par la toolchain mini : son "
+                "élaboration exige `import Lake`, qui tire l'arbre "
+                "lib/lean/Lean/** (1,33 Go mesurés). Convertissez le "
+                "projet en lakefile.toml (`lake new` génère du TOML par "
+                "défaut)."
+            )
+        env = self._env()
+        precedent_ld = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = self.env_lean_path() if not precedent_ld \
+            else self.env_lean_path() + os.pathsep + precedent_ld
+        proc = subprocess.run(
+            [binaire] + list(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=env,
+            cwd=dossier,
+        )
+        return {
+            "rc": proc.returncode,
+            "stdout": proc.stdout or "",
+            "stderr": proc.stderr or "",
+            "ok": proc.returncode == 0,
+        }
+
     # ── installation ─────────────────────────────────────
 
-    def installer(self, progression=None, avec_natif=False):
+    def installer(self, progression=None, avec_natif=False, avec_lake=False):
         """Installe la toolchain (idempotent). Retourne un dict de statut.
 
         Args:
             progression: callable optionnel(phase, info) où phase ∈
                 {"deja_installee", "telechargement", "extraction",
-                 "validation", "terminee"}.
+                 "validation", "terminee", "extraction_lake",
+                 "validation_lake"}.
             avec_natif: si True, extrait aussi le kit natif (leanc +
                 clang embarqué + ld.lld + archives statiques + en-têtes C ;
                 +575 Mo) et le valide. L'extraction est additive : sur une
                 installation minimale existante, seul le kit natif est
                 ajouté (pas de re-téléchargement).
+            avec_lake: si True, extrait aussi Lake (bin/lake +
+                libLake_shared.so + oleans Lake + en-têtes C + archives
+                tierces, ~34 Mo), crée les liens d'édition de liens et
+                valide (`lake --version`). Additif également : sur une
+                installation existante, seul Lake est ajouté (pas de
+                re-téléchargement). Limite : seuls les projets
+                `lakefile.toml` sont supportés (`lakefile.lean` exigerait
+                l'arbre Lean.*, 1,33 Go).
         """
         def _sig(phase, info=None):
             if progression is not None:
                 progression(phase, info or {})
 
         deja = self.est_installee()
-        if deja and (not avec_natif or self.natif_installe()):
+        manque_lake = avec_lake and not self.lake_installe()
+        if deja and (not avec_natif or self.natif_installe()) \
+                and not manque_lake:
             _sig("deja_installee", {"rep": self.rep_install})
             return {
                 "statut": "DEJA_INSTALLEE",
@@ -214,26 +423,38 @@ class ToolchainManager:
         if avec_natif:
             resultat_natif = valider_natif(self.rep_install)
 
+        lake_final = self._lake_marque()
+        resultat_lake = None
+        if manque_lake:
+            _sig("extraction_lake", {"archive": self.chemin_archive})
+            resultat_lake = self.installer_lake(progression=progression)
+            lake_final = True
+
         with open(self.chemin_marqueur, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "version": self.version,
                     "sha256": self.manifeste["sha256"],
                     "natif": natif_final,
+                    "lake": lake_final,
                     "valide_par": resultat["sortie"],
                 },
                 f,
             )
-        _sig("terminee", {"rep": self.rep_install, "natif": natif_final})
+        _sig("terminee", {"rep": self.rep_install, "natif": natif_final,
+                          "lake": lake_final})
         statut = {
             "statut": "INSTALLEE",
             "rep": self.rep_install,
             "version": self.version,
             "chemin_lean": resultat["chemin_lean"],
             "natif": natif_final,
+            "lake": lake_final,
         }
         if resultat_natif is not None:
             statut["chemin_leanc"] = resultat_natif["chemin_leanc"]
+        if resultat_lake is not None:
+            statut["chemin_lake"] = resultat_lake["chemin_lake"]
         return statut
 
     # ── version de projet (lean-toolchain) ───────────────────
@@ -467,6 +688,10 @@ class ToolchainManager:
         nouvel_version = nouveau_manifeste["version"]
         url = nouveau_manifeste["url"]
         sha256 = nouveau_manifeste["sha256"]
+        # Lake (chantier 2) : mémoriser avant la bascule pour le reporter.
+        lake_avant = bool(
+            ancienne_version and self.est_installee() and self.lake_installe()
+        )
 
         # Si déjà à jour, ne rien faire.
         if ancienne_version == nouvel_version and self.est_installee():
@@ -540,6 +765,18 @@ class ToolchainManager:
             _sig("application", {"lies": n_lies, "copies": n_copies})
 
             # Manifeste par fichier dans la nouvelle installation.
+            # Reporter Lake d'abord (chantier 2) pour qu'il figure au
+            # manifeste par fichier (l'archive de la nouvelle version est
+            # disponible dans archive_temp).
+            if lake_avant:
+                _sig("extension_lake", {"version": nouvel_version})
+                extraire_minimal(
+                    archive_temp, nouveau_rep, motifs=MOTIFS_LAKE,
+                    progression=lambda nf, no: _sig(
+                        "extension_lake", {"fichiers": nf, "octets": no}),
+                )
+                creer_liens_lake(nouveau_rep)
+                valider_lake(nouveau_rep)
             generer_manifeste(nouveau_rep, nouvel_version)
 
             # Valider et marquer.
@@ -553,6 +790,7 @@ class ToolchainManager:
                         "sha256": sha256,
                         "valide_par": resultat["sortie"],
                         "mis_a_jour_depuis": ancienne_version,
+                        "lake": lake_avant,
                     },
                     f,
                 )

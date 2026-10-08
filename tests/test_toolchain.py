@@ -39,17 +39,21 @@ from phi_complexity.toolchain import (
     MANIFESTE_DEFAUT,
     MOTIFS_EXTENSION_LEAN,
     MOTIFS_EXTENSION_STD,
+    MOTIFS_LAKE,
     MOTIFS_NATIFS,
     ErreurExtraction,
     ErreurTelechargement,
     ErreurValidation,
     ErreurVerification,
     FormatLeanToolchainInvalide,
+    LakeAbsent,
+    LakeConfigNonSupportee,
     ToolchainAbsente,
     ToolchainManager,
     VersionNonSupportee,
     lire_version_projet,
     valider_extension,
+    valider_lake,
     valider_natif,
 )
 from phi_complexity.toolchain.download import telecharger
@@ -61,6 +65,10 @@ from phi_complexity.toolchain.extract import (
 )
 from phi_complexity.toolchain.extract import MOTIFS_MINIMAUX, extraire_minimal
 from phi_complexity.toolchain.extract import MOTIFS_NATIFS as MOTIFS_NATIFS_EXTRACT
+from phi_complexity.toolchain.extract import (
+    MOTIFS_LAKE as MOTIFS_LAKE_EXTRACT,
+)
+from phi_complexity.toolchain.extract import creer_liens_lake
 from phi_complexity.toolchain.validate import valider
 
 
@@ -1519,6 +1527,427 @@ class TestInstallerExtension(unittest.TestCase):
         self.assertGreater(
             extensions["lean"]["taille_octets_mesuree"],
             extensions["std"]["taille_octets_mesuree"])
+
+
+# ── Lake (chantier 2, 2026-10-08) ──────────────────────────
+
+SCRIPT_FAUX_LAKE = '#!/bin/sh\necho "Lake version 5.0.0-test (Lean version 4.34.0)"\n'
+
+
+def _fabriquer_archive_lake_tar_zst(chemin):
+    """Archive .tar.zst de test avec des fichiers Lake factices + pièges.
+
+    Les pièges vérifient la sélectivité : .olean.private / .olean.server /
+    .ilean / .ir doivent rester dehors (exclus par conception, voir
+    MOTIFS_LAKE), ainsi que libLake.a et l'arbre Lean.*.
+    """
+    membres = [
+        ("lean-4.34.0-linux/bin/lake", SCRIPT_FAUX_LAKE.encode(), 0o755),
+        ("lean-4.34.0-linux/lib/lean/libLake_shared.so",
+         b"\x7fELF-faux-lake", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lake.olean", b"OLEAN-lake", 0o644),
+        ("lean-4.34.0-linux/lib/lean/LakeMain.olean",
+         b"OLEAN-lakemain", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lake/DSL/Config.olean",
+         b"OLEAN-cfg", 0o644),
+        ("lean-4.34.0-linux/include/lean/lean.h", b"/* lean.h */", 0o644),
+        ("lean-4.34.0-linux/lib/libc++.a", b"AR-faux-c++", 0o644),
+        ("lean-4.34.0-linux/lib/libgmp.a", b"AR-faux-gmp", 0o644),
+        # --- pièges : variantes olean exclues ---
+        ("lean-4.34.0-linux/lib/lean/Lake.olean.private",
+         b"PIEGE-prive", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lake/DSL/Config.olean.server",
+         b"PIEGE-serveur", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lake/DSL/Config.ilean",
+         b"PIEGE-ilean", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lake/DSL/Config.ir",
+         b"PIEGE-ir", 0o644),
+        # --- pièges : hors motifs ---
+        ("lean-4.34.0-linux/lib/lean/libLake.a", b"PIEGE-statique", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lean.olean", b"PIEGE-lean", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Init.olean", b"PIEGE-init", 0o644),
+    ]
+    tampon = io.BytesIO()
+    with tarfile.open(fileobj=tampon, mode="w") as tar:
+        for nom, contenu, mode in membres:
+            info = tarfile.TarInfo(nom)
+            info.size = len(contenu)
+            info.mode = mode
+            tar.addfile(info, io.BytesIO(contenu))
+    compresseur = zstandard.ZstdCompressor()
+    with open(chemin, "wb") as f:
+        f.write(compresseur.compress(tampon.getvalue()))
+
+
+def _installer_base_lake(tmp):
+    """Gestionnaire + base minimale simulée (marqueur .valide + bin/lean).
+
+    Retourne (manager, archive_lake) avec l'archive lake factice déjà
+    placée à l'emplacement attendu par installer_lake().
+    """
+    manifeste = _ecrire_manifeste_test(tmp)
+    m = ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                         manifeste=manifeste)
+    rep = m.rep_install
+    os.makedirs(os.path.join(rep, "bin"), exist_ok=True)
+    with open(os.path.join(rep, "bin", "lean"), "w") as f:
+        f.write("#!/bin/sh\necho Lean\n")
+    os.chmod(os.path.join(rep, "bin", "lean"), 0o755)
+    with open(m.chemin_marqueur, "w", encoding="utf-8") as f:
+        json.dump({"version": "4.34.0", "sha256": "ab" * 32}, f)
+    _fabriquer_archive_lake_tar_zst(m.chemin_archive)
+    return m
+
+
+class TestMotifsLake(unittest.TestCase):
+    """Gardes documentaires sur MOTIFS_LAKE et sa synchro manifeste."""
+
+    def test_pieces_requises_presentes(self):
+        self.assertIn("bin/lake", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/lean/libLake_shared.so", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/lean/Lake.olean", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/lean/LakeMain.olean", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/lean/Lake/*.olean", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("include/lean/*.h", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/libc++.a", MOTIFS_LAKE_EXTRACT)
+        self.assertIn("lib/libgmp.a", MOTIFS_LAKE_EXTRACT)
+
+    def test_variantes_exclues(self):
+        """Ni .private (64 Mo), ni .server, ni .ilean, ni .ir, ni .a Lean."""
+        for motif in MOTIFS_LAKE_EXTRACT:
+            self.assertNotIn(".private", motif,
+                             "variante .private exclue par conception")
+            self.assertNotIn(".server", motif)
+            self.assertNotIn(".ilean", motif)
+            self.assertNotIn(".ir", motif)
+        self.assertNotIn("lib/lean/libLake.a", MOTIFS_LAKE_EXTRACT,
+                         "le statique libLake.a (21 Mo) est inutile "
+                         "(le .so suffit)")
+        self.assertEqual(len(MOTIFS_LAKE_EXTRACT),
+                         len(set(MOTIFS_LAKE_EXTRACT)),
+                         "motif dupliqué dans MOTIFS_LAKE")
+
+    def test_motifs_synchronises_avec_manifeste(self):
+        """Égalité stricte manifeste <-> extract.py (garde anti-dérive)."""
+        with open(MANIFESTE_DEFAUT, "r", encoding="utf-8") as f:
+            manifeste = json.load(f)
+        self.assertEqual(sorted(manifeste["fichiers_lake"]),
+                         sorted(MOTIFS_LAKE_EXTRACT),
+                         "dérive : fichiers_lake != MOTIFS_LAKE")
+        self.assertGreater(manifeste.get("taille_lake_octets_approx", 0), 0,
+                           "taille_lake_octets_approx doit être mesurée")
+        self.assertIn("lakefile.toml", manifeste.get("note_lake", ""),
+                      "la note doit documenter la limite lakefile.toml-only")
+
+
+class TestExtraireLake(unittest.TestCase):
+    """extract.extraire_minimal + MOTIFS_LAKE — sélectivité prouvée."""
+
+    def test_seul_lake_est_extrait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_lake_tar_zst(archive)
+            dest = os.path.join(tmp, "lake")
+            resultat = extraire_minimal(
+                archive, dest, motifs=MOTIFS_LAKE_EXTRACT)
+
+            attendus = [
+                "bin/lake",
+                "lib/lean/libLake_shared.so",
+                "lib/lean/Lake.olean",
+                "lib/lean/LakeMain.olean",
+                "lib/lean/Lake/DSL/Config.olean",
+                "include/lean/lean.h",
+                "lib/libc++.a",
+                "lib/libgmp.a",
+            ]
+            for relatif in attendus:
+                self.assertTrue(
+                    os.path.isfile(os.path.join(dest, relatif)),
+                    "manquant : %s" % relatif,
+                )
+            pieges = [
+                "lib/lean/Lake.olean.private",
+                "lib/lean/Lake/DSL/Config.olean.server",
+                "lib/lean/Lake/DSL/Config.ilean",
+                "lib/lean/Lake/DSL/Config.ir",
+                "lib/lean/libLake.a",
+                "lib/lean/Lean.olean",
+                "lib/lean/Init.olean",
+            ]
+            for piege in pieges:
+                self.assertFalse(
+                    os.path.exists(os.path.join(dest, piege)),
+                    "piège extrait à tort : %s" % piege,
+                )
+            self.assertEqual(resultat["fichiers"], len(attendus))
+
+    def test_bit_executable_lake_preserve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_lake_tar_zst(archive)
+            dest = os.path.join(tmp, "lake")
+            extraire_minimal(archive, dest, motifs=MOTIFS_LAKE_EXTRACT)
+            binaire = os.path.join(dest, "bin", "lake")
+            self.assertTrue(os.access(binaire, os.X_OK),
+                            "le bit exécutable de bin/lake est perdu")
+
+
+class TestCreerLiensLake(unittest.TestCase):
+    """extract.creer_liens_lake — liens + libStd.a vide, idempotent."""
+
+    def test_liens_et_archive_vide_crees(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "inst")
+            os.makedirs(os.path.join(dest, "lib", "lean"))
+            # cibles des liens (factices, seul le lien compte ici)
+            for cible in ("libleanshared.so", "libInit_shared.so",
+                          "libLake_shared.so"):
+                open(os.path.join(dest, "lib", "lean", cible), "w").close()
+            open(os.path.join(dest, "lib", "libc++.a"), "w").close()
+            open(os.path.join(dest, "lib", "libgmp.a"), "w").close()
+
+            resultat = creer_liens_lake(dest)
+
+            self.assertEqual(
+                os.readlink(os.path.join(dest, "lib", "lean", "libLean.so")),
+                "libleanshared.so")
+            self.assertEqual(
+                os.readlink(os.path.join(dest, "lib", "lean",
+                                         "libgmp.a")),
+                "../libgmp.a")
+            chemin_std = os.path.join(dest, "lib", "lean", "libStd.a")
+            self.assertTrue(os.path.isfile(chemin_std))
+            with open(chemin_std, "rb") as f:
+                self.assertEqual(f.read(), b"!<arch>\n")
+            self.assertEqual(resultat["liens"], 10)
+            self.assertEqual(resultat["archives"], 1)
+
+    def test_idempotent_et_non_destructif(self):
+        """2e appel : rien à faire ; vraie libStd.a (kit natif) conservée."""
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "inst")
+            os.makedirs(os.path.join(dest, "lib", "lean"))
+            for cible in ("libleanshared.so", "libInit_shared.so",
+                          "libLake_shared.so"):
+                open(os.path.join(dest, "lib", "lean", cible), "w").close()
+            # vraie libStd.a du kit natif : ne doit JAMAIS être écrasée
+            vraie = os.path.join(dest, "lib", "lean", "libStd.a")
+            with open(vraie, "wb") as f:
+                f.write(b"!<arch>\n" + b"VRAIE-ARCHIVE-NATIF" * 100)
+            taille_avant = os.path.getsize(vraie)
+
+            premier = creer_liens_lake(dest)
+            self.assertEqual(premier["archives"], 0,
+                             "la vraie libStd.a ne doit pas être écrasée")
+            self.assertEqual(os.path.getsize(vraie), taille_avant)
+            second = creer_liens_lake(dest)
+            self.assertEqual(second["liens"], 0)
+            self.assertEqual(second["archives"], 0)
+
+    def test_destination_absente_leve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ErreurExtraction):
+                creer_liens_lake(os.path.join(tmp, "inexistant"))
+
+
+class TestValiderLake(unittest.TestCase):
+    """validate.valider_lake — faux binaire shell, aucun vrai Lake requis."""
+
+    def _faux_lake(self, rep, executable=True):
+        dossier_bin = os.path.join(rep, "bin")
+        os.makedirs(dossier_bin, exist_ok=True)
+        chemin = os.path.join(dossier_bin, "lake")
+        with open(chemin, "w", encoding="utf-8") as f:
+            f.write(SCRIPT_FAUX_LAKE)
+        os.chmod(chemin, 0o755 if executable else 0o644)
+        for relatif in ("lib/lean/libLake_shared.so",
+                        "lib/lean/Lake.olean",
+                        "lib/lean/Lake/DSL/Config.olean",
+                        "include/lean/lean.h"):
+            chemin_f = os.path.join(rep, relatif)
+            os.makedirs(os.path.dirname(chemin_f), exist_ok=True)
+            open(chemin_f, "w").close()
+        return chemin
+
+    def test_succes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            chemin = self._faux_lake(tmp)
+            resultat = valider_lake(tmp)
+            self.assertEqual(resultat["chemin_lake"], chemin)
+            self.assertIn("Lake version", resultat["version"])
+
+    def test_binaire_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ErreurValidation):
+                valider_lake(tmp)
+
+    def test_piece_critique_manquante(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._faux_lake(tmp)
+            os.remove(os.path.join(tmp, "lib", "lean", "Lake.olean"))
+            with self.assertRaises(ErreurValidation):
+                valider_lake(tmp)
+
+    def test_sortie_inattendue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dossier_bin = os.path.join(tmp, "bin")
+            os.makedirs(dossier_bin, exist_ok=True)
+            chemin = os.path.join(dossier_bin, "lake")
+            with open(chemin, "w") as f:
+                f.write('#!/bin/sh\necho "pas lake du tout"\n')
+            os.chmod(chemin, 0o755)
+            for relatif in ("lib/lean/libLake_shared.so",
+                            "lib/lean/Lake.olean",
+                            "lib/lean/Lake/DSL/Config.olean",
+                            "include/lean/lean.h"):
+                chemin_f = os.path.join(tmp, relatif)
+                os.makedirs(os.path.dirname(chemin_f), exist_ok=True)
+                open(chemin_f, "w").close()
+            with self.assertRaises(ErreurValidation):
+                valider_lake(tmp)
+
+
+class TestManagerLake(unittest.TestCase):
+    """manager : installer_lake(), avec_lake, chemin_lake, executer_lake."""
+
+    def test_installer_lake_ajout_reel_sans_reseau(self):
+        """Extraction réelle depuis l'archive factice en cache (0 réseau)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _installer_base_lake(tmp)
+            self.assertFalse(m.lake_installe())
+
+            resultat = m.installer_lake()
+
+            self.assertEqual(resultat["statut"], "LAKE_INSTALLE")
+            self.assertTrue(os.access(
+                os.path.join(m.rep_install, "bin", "lake"), os.X_OK))
+            self.assertTrue(os.path.islink(
+                os.path.join(m.rep_install, "lib", "lean", "libLean.so")))
+            self.assertTrue(m.lake_installe())
+            self.assertEqual(m.chemin_lake(),
+                             os.path.join(m.rep_install, "bin", "lake"))
+            # idempotence
+            second = m.installer_lake()
+            self.assertEqual(second["statut"], "DEJA_INSTALLEE")
+
+    def test_installer_lake_sans_base_leve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifeste = _ecrire_manifeste_test(tmp)
+            m = ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                                 manifeste=manifeste)
+            with self.assertRaises(ToolchainAbsente):
+                m.installer_lake()
+
+    def test_chemin_lake_absent_leve_lake_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _installer_base_lake(tmp)
+            with self.assertRaises(LakeAbsent) as ctx:
+                m.chemin_lake()
+            self.assertIn("--avec-lake", str(ctx.exception))
+
+    def test_installer_avec_lake_delegue(self):
+        """installer(avec_lake=True) appelle installer_lake() (mocké ici)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifeste = _ecrire_manifeste_test(tmp)
+            m = ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                                 manifeste=manifeste)
+            faux = _FauxPhases()
+            p1, p2, p3 = _patch_phases(faux)
+            with p1, p2, p3, \
+                    patch("phi_complexity.toolchain.manager.valider_lake",
+                          return_value={"chemin_lake": "X",
+                                        "version": "Lake test",
+                                        "sortie": "Lake version test"}), \
+                    patch.object(ToolchainManager, "installer_lake",
+                                 return_value={"statut": "LAKE_INSTALLE",
+                                               "chemin_lake": "X",
+                                               "fichiers": 1, "octets": 1,
+                                               "liens": 1}) as faux_lake:
+                resultat = m.installer(avec_lake=True)
+            self.assertEqual(resultat["statut"], "INSTALLEE")
+            self.assertTrue(resultat["lake"])
+            self.assertEqual(resultat["chemin_lake"], "X")
+            faux_lake.assert_called_once()
+
+    def test_installer_sans_lake_inchange(self):
+        """Par défaut : pas d'appel à installer_lake, clé lake=False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manifeste = _ecrire_manifeste_test(tmp)
+            m = ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                                 manifeste=manifeste)
+            faux = _FauxPhases()
+            p1, p2, p3 = _patch_phases(faux)
+            with p1, p2, p3, \
+                    patch.object(ToolchainManager, "installer_lake") \
+                    as faux_lake:
+                resultat = m.installer()
+            faux_lake.assert_not_called()
+            self.assertFalse(resultat["lake"])
+
+    def test_executer_lake_environnement_et_cwd(self):
+        """executer_lake : LEAN_PATH + LD_LIBRARY_PATH, cwd propagé."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _installer_base_lake(tmp)
+            # simuler lake installé (binaire factice suffit pour le chemin)
+            os.makedirs(os.path.join(m.rep_install, "bin"), exist_ok=True)
+            with open(os.path.join(m.rep_install, "bin", "lake"), "w") as f:
+                f.write("#!/bin/sh\necho lake\n")
+            os.chmod(os.path.join(m.rep_install, "bin", "lake"), 0o755)
+            with open(m.chemin_marqueur, "r", encoding="utf-8") as f:
+                marqueur = json.load(f)
+            marqueur["lake"] = True
+            with open(m.chemin_marqueur, "w", encoding="utf-8") as f:
+                json.dump(marqueur, f)
+
+            projet = os.path.join(tmp, "projet")
+            os.makedirs(projet)
+            faux_proc = SimpleNamespace(returncode=0, stdout="ok\n",
+                                        stderr="")
+            with patch("phi_complexity.toolchain.manager.subprocess.run",
+                       return_value=faux_proc) as faux_run:
+                resultat = m.executer_lake(["new", "demo"], cwd=projet)
+
+            cmd = faux_run.call_args[0][0]
+            self.assertEqual(cmd[0], m.chemin_lake())
+            self.assertEqual(cmd[1:], ["new", "demo"])
+            self.assertEqual(faux_run.call_args[1]["cwd"], projet)
+            env = faux_run.call_args[1]["env"]
+            lib_lean = os.path.join(m.rep_install, "lib", "lean")
+            self.assertEqual(env["LEAN_PATH"], lib_lean)
+            self.assertIn(lib_lean, env["LD_LIBRARY_PATH"])
+            self.assertEqual(resultat, {"rc": 0, "stdout": "ok\n",
+                                        "stderr": "", "ok": True})
+
+    def test_executer_lake_refuse_lakefile_lean(self):
+        """lakefile.lean sans lakefile.toml → LakeConfigNonSupportee claire."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = _installer_base_lake(tmp)
+            os.makedirs(os.path.join(m.rep_install, "bin"), exist_ok=True)
+            with open(os.path.join(m.rep_install, "bin", "lake"), "w") as f:
+                f.write("#!/bin/sh\necho lake\n")
+            os.chmod(os.path.join(m.rep_install, "bin", "lake"), 0o755)
+            with open(m.chemin_marqueur, "r", encoding="utf-8") as f:
+                marqueur = json.load(f)
+            marqueur["lake"] = True
+            with open(m.chemin_marqueur, "w", encoding="utf-8") as f:
+                json.dump(marqueur, f)
+
+            projet = os.path.join(tmp, "projet")
+            os.makedirs(projet)
+            with open(os.path.join(projet, "lakefile.lean"), "w") as f:
+                f.write("import Lake\n")
+            with self.assertRaises(LakeConfigNonSupportee) as ctx:
+                m.executer_lake(["build"], cwd=projet)
+            self.assertIn("lakefile.toml", str(ctx.exception))
+            # avec les deux fichiers : le TOML l'emporte, pas d'erreur
+            with open(os.path.join(projet, "lakefile.toml"), "w") as f:
+                f.write("[package]\n")
+            faux_proc = SimpleNamespace(returncode=0, stdout="", stderr="")
+            with patch("phi_complexity.toolchain.manager.subprocess.run",
+                       return_value=faux_proc):
+                resultat = m.executer_lake(["build"], cwd=projet)
+            self.assertTrue(resultat["ok"])
 
 
 if __name__ == "__main__":
