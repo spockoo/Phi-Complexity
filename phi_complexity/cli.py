@@ -220,6 +220,20 @@ Exemples :
                             "doublons (exclu par défaut : déclaré hors de la "
                             "chaîne Clay)")
 
+    vigilance = subparsers.add_parser("vigilance",
+                                      help="Détecteurs absolus (état unique) : "
+                                           "hypothèses impossibles, axiomes, "
+                                           "hypothèses inutilisées "
+                                           "(faits uniquement, jamais de verdict)")
+    vigilance.add_argument("cible",
+                           help="Fichier .lean ou dossier à analyser")
+    vigilance.add_argument("--format", choices=["console", "json"],
+                           default="console",
+                           help="Format de sortie (défaut : console)")
+    vigilance.add_argument("--sans-inutilisees", action="store_true",
+                           help="Désactiver le détecteur d'hypothèses "
+                                "inutilisées (signal faible)")
+
     sismique = subparsers.add_parser("sismique",
                                      help="Témoin : mémoire des rythmes via "
                                           "l'historique git (faits uniquement, "
@@ -2512,6 +2526,37 @@ def _executer_registre(args: argparse.Namespace) -> int:
 
 
 # ────────────────────────────────────────────────────────
+# VIGILANCE (détecteurs absolus — réparation+extension 2026-10-08)
+# ────────────────────────────────────────────────────────
+
+def _executer_vigilance(args):
+    """Exécute 'vigilance' : détecteurs absolus sur un état unique.
+
+    Lecture seule. Signale (hypothèses impossibles, axiomes déclarés,
+    hypothèses inutilisées) ; ne décide jamais. Le tri est humain.
+    """
+    from . import vigilance
+    import json
+    try:
+        fiches, decls = vigilance.scanner_complet(args.cible)
+    except Exception as e:
+        print(f"❌ Erreur lors du scan : {e}")
+        return 1
+    observations = vigilance.detecter_vacuite(fiches, decls)
+    if not getattr(args, "sans_inutilisees", False):
+        observations = observations + vigilance.detecter_hypotheses_inutilisees(
+            fiches, decls)
+    observations.sort(key=lambda o: (-o.saillance, o.nom))
+    axiomes = vigilance.inventaire_axiomes(fiches)
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(vigilance.vers_dict(observations, axiomes),
+                         ensure_ascii=False, indent=2))
+    else:
+        print(vigilance.formater_console(observations, axiomes))
+    return 0
+
+
+# ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
 
@@ -2566,6 +2611,10 @@ def main():
     if args.commande == "radar":
         # Le radar compare deux états : court-circuit avant la collecte.
         sys.exit(_executer_radar(args))
+
+    if args.commande == "vigilance":
+        # La vigilance analyse un état unique : court-circuit avant la collecte.
+        sys.exit(_executer_vigilance(args))
 
     if args.commande == "sismique":
         # La sismique lit l'historique git : court-circuit avant la collecte.
