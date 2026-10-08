@@ -515,6 +515,16 @@ Exemples :
                                  "fichier.py)")
     lilith_cmd.set_defaults(commande="lilith")
 
+    lean_cmd = subparsers.add_parser("lean", help="Toolchain Lean mini : installation et compilation")
+    lean_cmd.add_argument("--init", action="store_true", help="Télécharge et installe la toolchain Lean mini (125 Mo)")
+    lean_cmd.add_argument("--version", action="store_true", help="Affiche la version de la toolchain installée")
+    lean_cmd.add_argument("--ou", action="store_true", help="Affiche le chemin d'installation")
+    lean_cmd.add_argument("--timeout", type=int, default=300, help="Délai max compilation (s)")
+    groupe = lean_cmd.add_mutually_exclusive_group()
+    groupe.add_argument("--exec", action="store_true", help="Exécute via lean --run au lieu de compiler")
+    lean_cmd.add_argument("fichier", nargs="?", default=None, help="Fichier .lean à compiler/exécuter")
+    lean_cmd.set_defaults(commande="lean")
+
     return parser
 
 
@@ -1788,6 +1798,96 @@ def _executer_lilith(args: argparse.Namespace) -> int:
     return phi_lilith.main(reste)
 
 
+def _executer_lean(args: argparse.Namespace) -> int:
+    """Exécute 'lean' : toolchain Lean mini (installation, compilation).
+
+    Exemples :
+      phi lean --init              # télécharge et installe la toolchain
+      phi lean --version            # affiche la version installée
+      phi lean --ou                 # affiche le chemin d'installation
+      phi lean preuve.lean          # compile le fichier
+      phi lean preuve.lean --exec   # exécute via lean --run
+    """
+    from .toolchain import ToolchainManager, ToolchainAbsente
+    from .toolchain.download import ErreurTelechargement, ErreurVerification
+    from .toolchain.extract import ErreurExtraction
+    from .toolchain.validate import ErreurValidation
+
+    manager = ToolchainManager()
+
+    def _afficher_progression(phase, info):
+        if phase == "deja_installee":
+            print("Toolchain déjà installée : %s" % info.get("rep", ""))
+        elif phase == "telechargement":
+            octets = info.get("octets", 0)
+            print("Téléchargement : %.1f Mo téléchargés"
+                  % (octets / 1e6), end="\r", flush=True)
+        elif phase == "extraction":
+            print("Extraction : %d fichiers (%.1f Mo)"
+                  % (info.get("fichiers", 0), info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "validation":
+            print("\nValidation…", flush=True)
+        elif phase == "terminee":
+            print("\nInstallation terminée : %s" % info.get("rep", ""))
+
+    def _installer_ou_erreur():
+        """Installe la toolchain (idempotent). True si OK, False sinon."""
+        try:
+            resultat = manager.installer(progression=_afficher_progression)
+        except (ErreurTelechargement, ErreurVerification) as e:
+            print("❌ Échec du téléchargement : %s" % e)
+            return False
+        except ErreurExtraction as e:
+            print("❌ Échec de l'extraction : %s" % e)
+            return False
+        except ErreurValidation as e:
+            print("❌ Échec de la validation : %s" % e)
+            return False
+        print("Toolchain Lean %s installée : %s"
+              % (resultat.get("version"), resultat.get("rep")))
+        return True
+
+    if args.init:
+        return 0 if _installer_ou_erreur() else 1
+
+    if args.version:
+        if manager.est_installee():
+            print("Lean %s" % manager.version)
+        else:
+            print("toolchain absente (phi lean --init)")
+        return 0
+
+    if args.ou:
+        print(manager.rep_install)
+        return 0
+
+    fichier = getattr(args, "fichier", None)
+    if fichier is None:
+        print("Usage : phi lean [--init|--version|--ou] [fichier.lean] "
+              "[--exec] [--timeout N]")
+        return 2
+
+    if not manager.est_installee():
+        print("Toolchain Lean absente — installation en cours…")
+        if not _installer_ou_erreur():
+            return 1
+
+    try:
+        if args.exec:
+            resultat = manager.executer(fichier, timeout_s=args.timeout)
+        else:
+            resultat = manager.compiler(fichier, timeout_s=args.timeout)
+    except ToolchainAbsente as e:
+        print("❌ %s" % e)
+        return 1
+    if resultat.get("stdout"):
+        print(resultat["stdout"], end="")
+    if resultat.get("stderr"):
+        print(resultat["stderr"], end="", file=sys.stderr)
+    return 0 if resultat.get("ok") else 1
+
+
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
@@ -1890,6 +1990,11 @@ def main():
         # Les instruments Lilith travaillent sur un fichier Python ou un
         # profil --kappas : court-circuit avant la collecte de fichiers.
         sys.exit(_executer_lilith(args))
+
+    if args.commande == "lean":
+        # La toolchain Lean travaille sur un seul fichier .lean (ou ses
+        # propres options) : court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_lean(args))
 
     fichiers = _collecter_fichiers(args.cible)
     if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):
