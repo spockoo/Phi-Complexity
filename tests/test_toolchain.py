@@ -32,7 +32,18 @@ from unittest.mock import patch
 # Permet l'exécution directe du fichier depuis n'importe quel cwd.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import zstandard
+try:
+    import zstandard
+except ImportError:  # pragma: no cover - CI sans la dépendance optionnelle
+    zstandard = None
+
+
+def _requiert_zstandard():
+    """Saute le test si zstandard (dépendance optionnelle) est absent."""
+    if zstandard is None:
+        raise unittest.SkipTest(
+            "zstandard requis pour fabriquer les archives .tar.zst de test"
+        )
 
 from phi_complexity.toolchain import (
     EXTENSIONS_MOTIFS,
@@ -168,6 +179,7 @@ class TestTelecharger(unittest.TestCase):
 # ── extract ──────────────────────────────────────────────
 
 def _fabriquer_archive_tar_zst(chemin):
+    _requiert_zstandard()
     """Construit une vraie archive .tar.zst de test.
 
     Racine ``lean-4.34.0-linux/`` avec le minimal attendu plus des
@@ -304,6 +316,7 @@ class TestExtraireMinimal(unittest.TestCase):
 
 
 def _fabriquer_archive_natif_tar_zst(chemin):
+    _requiert_zstandard()
     """Construit une vraie archive .tar.zst avec un kit natif factice.
 
     Racine ``lean-4.34.0-linux/`` avec les pièces du kit natif, un lien
@@ -1166,6 +1179,7 @@ class TestManifeste(unittest.TestCase):
 # ── extensions optionnelles Lean/Std (chantier 3) ─────────
 
 def _fabriquer_archive_extensions(chemin):
+    _requiert_zstandard()
     """Archive .tar.zst de test avec des modules Lean/Std factices.
 
     Contient de quoi tester la sélectivité des motifs d'extension :
@@ -1535,6 +1549,7 @@ SCRIPT_FAUX_LAKE = '#!/bin/sh\necho "Lake version 5.0.0-test (Lean version 4.34.
 
 
 def _fabriquer_archive_lake_tar_zst(chemin):
+    _requiert_zstandard()
     """Archive .tar.zst de test avec des fichiers Lake factices + pièges.
 
     Les pièges vérifient la sélectivité : .olean.private / .olean.server /
