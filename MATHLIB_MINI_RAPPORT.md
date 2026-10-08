@@ -102,16 +102,18 @@ Comme pour la toolchain Lean : découper en archives <60 Mo (contrainte PyPI).
 Le découpage est **arbitraire** (les parties sont réassemblées ensemble,
 pas utilisées indépendamment).
 
-**Plan de découpage** (tailles compressées XZ estimées à ~17%) :
+**Difficulté rencontrée :** les `.olean.private` sont des fichiers *sparse*
+(3,4 Go apparents, ~431 Mo réels) qui se compressent mal avec XZ
+(ratio observé ~76%, vs ~16% attendu sur des oleans normaux).
+Un découpage en 3 parties donne ~110 Mo par partie — au-dessus des 60 Mo.
 
-| Partie | Contenu | Brut | Compressé (est.) |
-|---|---|---|---|
-| P1 | `.olean.private` (A–M) | ~330 Mo | ~56 Mo |
-| P2 | `.olean.private` (N–Z) | ~326 Mo | ~55 Mo |
-| P3 | `.olean` (tous) | 160 Mo | ~27 Mo |
-| P4 | `.olean.server` + dépendances | 216 Mo | ~37 Mo |
+**Options :**
+1. Plus de parties (6-8 pour les `.olean.private`) — atteignable mais fastidieux.
+2. Accepter des parties >60 Mo pour l'archivage DVD (pas de contrainte PyPI immédiate).
+3. Compression gzip (plus rapide, ratio légèrement moindre).
 
-Chaque partie <60 Mo. Total : ~175 Mo compressés pour ~1 Go.
+**Recommandation :** pour l'archivage DVD actuel, l'option 2 suffit.
+Le découpage fin <60 Mo sera fait quand PyPI deviendra la cible réelle.
 
 ### 4.3 Pourquoi pas de vraie réduction
 
