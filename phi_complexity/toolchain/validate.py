@@ -76,6 +76,91 @@ def valider(repertoire, version_attendue, timeout_s=60):
     }
 
 
+# Fichiers critiques du kit natif : sans eux l'édition de liens échoue
+# (mesuré le 2026-10-08 : `leanc` invoque clang avec -nostdinc -isystem
+# <sysroot>/include/clang, puis ld.lld avec les .a ci-dessous).
+_FICHIERS_NATIFS_CRITIQUES = [
+    "lib/lean/libInit.a",
+    "lib/lean/libLean.a",
+    "lib/lean/libStd.a",
+    "lib/lean/libLake.a",
+    "lib/lean/libleancpp.a",
+    "lib/lean/libleanrt.a",
+    "lib/lean/libleanmanifest.a",
+    "include/lean/lean.h",
+    "include/clang/stddef.h",
+    "lib/Scrt1.o",
+    "lib/crti.o",
+    "lib/crtn.o",
+]
+
+
+def valider_natif(repertoire, timeout_s=120):
+    """Valide le kit natif (leanc) d'une installation.
+
+    Critères (pré-enregistrés) :
+    1. `bin/leanc`, `bin/clang`, `bin/ld.lld` existent et sont exécutables ;
+    2. `bin/leanc --version` retourne un code 0 (délègue à clang : vérifie
+       implicitement la résolution des .so embarqués libclang-cpp,
+       libLLVM, libc++.so.1, ...) ;
+    3. les pièces critiques de l'édition de liens sont présentes
+       (archives statiques Lean, en-têtes C, objets de démarrage).
+
+    Args:
+        repertoire: répertoire racine de l'installation (contient bin/).
+        timeout_s: délai max pour `leanc --version`.
+
+    Returns:
+        dict: {"chemin_leanc": ..., "sortie": ...}.
+
+    Raises:
+        ErreurValidation: critère non satisfait (détail dans le message).
+    """
+    for nom in ("bin/leanc", "bin/clang", "bin/ld.lld"):
+        chemin = os.path.join(repertoire, nom)
+        if not os.path.isfile(chemin):
+            raise ErreurValidation("binaire natif absent : %s" % chemin)
+        if not os.access(chemin, os.X_OK):
+            raise ErreurValidation(
+                "binaire natif non exécutable : %s" % chemin
+            )
+
+    for relatif in _FICHIERS_NATIFS_CRITIQUES:
+        chemin = os.path.join(repertoire, relatif)
+        if not os.path.isfile(chemin):
+            raise ErreurValidation(
+                "pièce natif manquante : %s" % relatif
+            )
+
+    binaire = os.path.join(repertoire, "bin", "leanc")
+    try:
+        proc = subprocess.run(
+            [binaire, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ErreurValidation(
+            "`leanc --version` a dépassé %ds" % timeout_s
+        ) from exc
+    except OSError as exc:
+        raise ErreurValidation(
+            "exécution impossible de %s : %s" % (binaire, exc)
+        ) from exc
+
+    sortie = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        raise ErreurValidation(
+            "`leanc --version` a retourné %d : %s"
+            % (proc.returncode, sortie.strip()[:500])
+        )
+    return {
+        "chemin_leanc": binaire,
+        "sortie": sortie.strip()[:200],
+    }
+
+
 def valider_extension(repertoire, module_racine, timeout_s=600):
     """Valide une extension optionnelle par élaboration réelle.
 

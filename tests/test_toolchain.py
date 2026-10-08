@@ -39,6 +39,7 @@ from phi_complexity.toolchain import (
     MANIFESTE_DEFAUT,
     MOTIFS_EXTENSION_LEAN,
     MOTIFS_EXTENSION_STD,
+    MOTIFS_NATIFS,
     ErreurExtraction,
     ErreurTelechargement,
     ErreurValidation,
@@ -49,6 +50,7 @@ from phi_complexity.toolchain import (
     VersionNonSupportee,
     lire_version_projet,
     valider_extension,
+    valider_natif,
 )
 from phi_complexity.toolchain.download import telecharger
 from phi_complexity.toolchain.extract import (
@@ -58,6 +60,7 @@ from phi_complexity.toolchain.extract import (
     MOTIFS_EXTENSION_STD as MOTIFS_STD_EXTRACT,
 )
 from phi_complexity.toolchain.extract import MOTIFS_MINIMAUX, extraire_minimal
+from phi_complexity.toolchain.extract import MOTIFS_NATIFS as MOTIFS_NATIFS_EXTRACT
 from phi_complexity.toolchain.validate import valider
 
 
@@ -292,6 +295,141 @@ class TestExtraireMinimal(unittest.TestCase):
                             for m in MOTIFS_MINIMAUX))
 
 
+def _fabriquer_archive_natif_tar_zst(chemin):
+    """Construit une vraie archive .tar.zst avec un kit natif factice.
+
+    Racine ``lean-4.34.0-linux/`` avec les pièces du kit natif, un lien
+    symbolique sain (libc++.so.1 -> libc++.so.1.0), des pièges (bin/lake,
+    bin/llvm-ar volontairement exclu du kit) et des liens symboliques
+    malveillants (absolu, évasion relative).
+    """
+    racine = "lean-4.34.0-linux/"
+    membres = [
+        ("bin/leanc", b"#!/bin/sh\necho leanc\n", 0o755),
+        ("bin/clang", b"#!/bin/sh\necho clang\n", 0o755),
+        ("bin/ld.lld", b"#!/bin/sh\necho ld.lld\n", 0o755),
+        ("lib/libc++.so.1.0", b"FAUX-so-c++", 0o644),
+        ("lib/glibc/libc.so", b"FAUX-libc", 0o644),
+        ("lib/lean/libInit.a", b"FAUX-libInit", 0o644),
+        ("lib/lean/libLean.a", b"FAUX-libLean", 0o644),
+        ("include/clang/stddef.h", b"/* stddef */\n", 0o644),
+        ("include/lean/lean.h", b"/* lean.h */\n", 0o644),
+        # pièges : hors motifs natifs
+        ("bin/lake", b"#!/bin/sh\necho lake\n", 0o755),
+        ("bin/llvm-ar", b"#!/bin/sh\necho ar\n", 0o755),
+    ]
+    liens = [
+        # sain : relatif, reste sous dest_dir
+        ("lib/libc++.so.1", "libc++.so.1.0"),
+        # malveillants : refusés par la garde
+        ("lib/libunwind.so.1", "/etc/passwd"),
+        ("lib/libc++abi.so.1", "../../evil.so"),
+    ]
+    tampon = io.BytesIO()
+    with tarfile.open(fileobj=tampon, mode="w") as tar:
+        for nom, contenu, mode in membres:
+            info = tarfile.TarInfo(racine + nom)
+            info.size = len(contenu)
+            info.mode = mode
+            tar.addfile(info, io.BytesIO(contenu))
+        for nom, cible in liens:
+            info = tarfile.TarInfo(racine + nom)
+            info.type = tarfile.SYMTYPE
+            info.linkname = cible
+            tar.addfile(info)
+    compresseur = zstandard.ZstdCompressor()
+    with open(chemin, "wb") as f:
+        f.write(compresseur.compress(tampon.getvalue()))
+
+
+class TestExtraireNatif(unittest.TestCase):
+    """extract.extraire_minimal + MOTIFS_NATIFS — kit leanc, liens sains."""
+
+    def test_kit_natif_extrait(self):
+        """Les pièces du kit sortent, les pièges (lake, llvm-ar) restent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_natif_tar_zst(archive)
+            dest = os.path.join(tmp, "natif")
+            resultat = extraire_minimal(
+                archive, dest, motifs=MOTIFS_NATIFS_EXTRACT)
+
+            attendus = [
+                "bin/leanc",
+                "bin/clang",
+                "bin/ld.lld",
+                "lib/libc++.so.1.0",
+                "lib/glibc/libc.so",
+                "lib/lean/libInit.a",
+                "lib/lean/libLean.a",
+                "include/clang/stddef.h",
+                "include/lean/lean.h",
+            ]
+            for relatif in attendus:
+                self.assertTrue(
+                    os.path.isfile(os.path.join(dest, relatif)),
+                    "manquant : %s" % relatif,
+                )
+            for piege in ("bin/lake", "bin/llvm-ar"):
+                self.assertFalse(
+                    os.path.exists(os.path.join(dest, piege)),
+                    "piège extrait à tort : %s" % piege,
+                )
+            self.assertEqual(resultat["dest"], dest)
+
+    def test_lien_symbolique_sain_recree(self):
+        """libc++.so.1 -> libc++.so.1.0 recréé comme lien, résolvable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_natif_tar_zst(archive)
+            dest = os.path.join(tmp, "natif")
+            extraire_minimal(archive, dest, motifs=MOTIFS_NATIFS_EXTRACT)
+            lien = os.path.join(dest, "lib", "libc++.so.1")
+            self.assertTrue(os.path.islink(lien),
+                            "libc++.so.1 doit être un lien symbolique")
+            self.assertEqual(os.readlink(lien), "libc++.so.1.0")
+            with open(lien, "rb") as f:
+                self.assertEqual(f.read(), b"FAUX-so-c++")
+
+    def test_liens_malveillants_rejetes(self):
+        """Lien absolu et évasion relative : jamais créés."""
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_natif_tar_zst(archive)
+            dest = os.path.join(tmp, "natif")
+            extraire_minimal(archive, dest, motifs=MOTIFS_NATIFS_EXTRACT)
+            for nom in ("lib/libunwind.so.1", "lib/libc++abi.so.1"):
+                self.assertFalse(
+                    os.path.lexists(os.path.join(dest, nom)),
+                    "lien malveillant créé : %s" % nom,
+                )
+            self.assertFalse(os.path.exists(os.path.join(tmp, "evil.so")))
+
+    def test_bit_executable_leanc_preserve(self):
+        """bin/leanc (0o755 dans l'archive) reste exécutable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_natif_tar_zst(archive)
+            dest = os.path.join(tmp, "natif")
+            extraire_minimal(archive, dest, motifs=MOTIFS_NATIFS_EXTRACT)
+            binaire = os.path.join(dest, "bin", "leanc")
+            self.assertTrue(os.access(binaire, os.X_OK),
+                            "le bit exécutable de bin/leanc est perdu")
+
+    def test_motifs_natifs_documentes(self):
+        """Garde : pièces critiques présentes, llvm-ar exclu, motifs uniques."""
+        self.assertIn("bin/leanc", MOTIFS_NATIFS_EXTRACT)
+        self.assertIn("bin/clang", MOTIFS_NATIFS_EXTRACT)
+        self.assertIn("bin/ld.lld", MOTIFS_NATIFS_EXTRACT)
+        self.assertIn("lib/lean/libLean.a", MOTIFS_NATIFS_EXTRACT)
+        self.assertIn("include/clang/*", MOTIFS_NATIFS_EXTRACT)
+        self.assertNotIn("bin/llvm-ar", MOTIFS_NATIFS_EXTRACT,
+                         "llvm-ar n'est jamais invoqué par leanc")
+        self.assertEqual(len(MOTIFS_NATIFS_EXTRACT),
+                         len(set(MOTIFS_NATIFS_EXTRACT)),
+                         "motif dupliqué dans MOTIFS_NATIFS")
+
+
 # ── validate ─────────────────────────────────────────────
 
 SCRIPT_FAUX_LEAN = '#!/bin/sh\necho "Lean (version 4.34.0, x86_64)"\n'
@@ -339,6 +477,60 @@ class TestValider(unittest.TestCase):
             _faux_lean(tmp, executable=False)
             with self.assertRaises(ErreurValidation):
                 valider(tmp, "4.34.0")
+
+
+def _faux_kit_natif(dossier):
+    """Crée un kit natif factice (binaires + pièces critiques)."""
+    for nom in ("bin/leanc", "bin/clang", "bin/ld.lld"):
+        chemin = os.path.join(dossier, nom)
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+        with open(chemin, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\necho "clang version 22.1.4"\n')
+        os.chmod(chemin, 0o755)
+    from phi_complexity.toolchain.validate import _FICHIERS_NATIFS_CRITIQUES
+    for relatif in _FICHIERS_NATIFS_CRITIQUES:
+        chemin = os.path.join(dossier, relatif)
+        os.makedirs(os.path.dirname(chemin), exist_ok=True)
+        with open(chemin, "wb") as f:
+            f.write(b"FAUX")
+    return os.path.join(dossier, "bin", "leanc")
+
+
+class TestValiderNatif(unittest.TestCase):
+    """validate.valider_natif — kit leanc factice, binaires mockés."""
+
+    def test_succes(self):
+        """Kit complet + leanc --version rc 0 → dict retourné."""
+        with tempfile.TemporaryDirectory() as tmp:
+            chemin = _faux_kit_natif(tmp)
+            resultat = valider_natif(tmp)
+            self.assertEqual(resultat["chemin_leanc"], chemin)
+            self.assertIn("22.1.4", resultat["sortie"])
+
+    def test_binaire_absent(self):
+        """Pas de bin/leanc → ErreurValidation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ErreurValidation):
+                valider_natif(tmp)
+
+    def test_piece_critique_manquante(self):
+        """Sans lib/lean/libLean.a → ErreurValidation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _faux_kit_natif(tmp)
+            os.unlink(os.path.join(tmp, "lib", "lean", "libLean.a"))
+            with self.assertRaises(ErreurValidation):
+                valider_natif(tmp)
+
+    def test_leanc_version_echec(self):
+        """`leanc --version` rc != 0 → ErreurValidation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _faux_kit_natif(tmp)
+            with patch("phi_complexity.toolchain.validate.subprocess.run",
+                       ) as faux_run:
+                faux_run.return_value = SimpleNamespace(
+                    returncode=1, stdout="", stderr="boom\n")
+                with self.assertRaises(ErreurValidation):
+                    valider_natif(tmp)
 
 
 # ── manager ──────────────────────────────────────────────
@@ -555,6 +747,118 @@ class TestToolchainManager(unittest.TestCase):
             self.assertEqual(resultat["rc"], 1)
             self.assertFalse(resultat["ok"])
             self.assertEqual(resultat["stderr"], "erreur\n")
+
+
+class _FauxPhasesNatif(_FauxPhases):
+    """_FauxPhases + motifs capturés + bin/leanc simulé + valider_natif."""
+
+    def __init__(self):
+        super().__init__()
+        self.motifs_recus = []
+        self.validations_natif = []
+
+    def extraire_minimal(self, archive, dest_dir, motifs=None,
+                         progression=None):
+        self.motifs_recus.append(list(motifs) if motifs else None)
+        resultat = super().extraire_minimal(
+            archive, dest_dir, motifs=motifs, progression=progression)
+        if motifs and "bin/leanc" in motifs:
+            binaire = os.path.join(dest_dir, "bin", "leanc")
+            with open(binaire, "w", encoding="utf-8") as f:
+                f.write("#!/bin/sh\necho leanc\n")
+            os.chmod(binaire, 0o755)
+        return resultat
+
+    def valider_natif(self, repertoire, timeout_s=120):
+        self.validations_natif.append(repertoire)
+        return {
+            "chemin_leanc": os.path.join(repertoire, "bin", "leanc"),
+            "sortie": "clang version 22.1.4",
+        }
+
+
+def _patch_phases_natif(faux):
+    """Les 3 phases + valider_natif patchées dans le namespace manager."""
+    p1, p2, p3 = _patch_phases(faux)
+    p4 = patch("phi_complexity.toolchain.manager.valider_natif",
+               side_effect=faux.valider_natif)
+    return p1, p2, p3, p4
+
+
+class TestInstallerNatif(unittest.TestCase):
+    """manager.installer(avec_natif=True) — phases mockées, aucun réseau."""
+
+    def _gestionnaire(self, tmp):
+        manifeste = _ecrire_manifeste_test(tmp)
+        return ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                                manifeste=manifeste)
+
+    def test_avec_natif_transmet_motifs_combines(self):
+        """avec_natif=True → motifs MINIMAUX+NATIFS, valider_natif appelé."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesNatif()
+            p1, p2, p3, p4 = _patch_phases_natif(faux)
+            with p1, p2, p3, p4:
+                resultat = m.installer(avec_natif=True)
+            self.assertEqual(resultat["statut"], "INSTALLEE")
+            self.assertTrue(resultat["natif"])
+            self.assertEqual(
+                faux.motifs_recus[-1], MOTIFS_MINIMAUX + MOTIFS_NATIFS,
+                "l'extraction doit recevoir MINIMAUX + NATIFS")
+            self.assertEqual(faux.validations_natif, [m.rep_install])
+            self.assertEqual(resultat["chemin_leanc"],
+                             os.path.join(m.rep_install, "bin", "leanc"))
+            self.assertTrue(m.natif_installe())
+            self.assertEqual(m.chemin_leanc(),
+                             os.path.join(m.rep_install, "bin", "leanc"))
+
+    def test_sans_natif_comportement_inchange(self):
+        """Par défaut : motifs=None, pas de validation natif, marqueur False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesNatif()
+            p1, p2, p3, p4 = _patch_phases_natif(faux)
+            with p1, p2, p3, p4:
+                resultat = m.installer()
+            self.assertEqual(resultat["statut"], "INSTALLEE")
+            self.assertFalse(resultat["natif"])
+            self.assertEqual(faux.motifs_recus[-1], None,
+                             "sans avec_natif, motifs=None (défaut)")
+            self.assertEqual(faux.validations_natif, [])
+            self.assertFalse(m.natif_installe())
+            with self.assertRaises(ToolchainAbsente):
+                m.chemin_leanc()
+
+    def test_ajout_natif_sur_installation_existante(self):
+        """installer() puis installer(avec_natif=True) : ajout sans
+        re-téléchargement ; 3e appel → DEJA_INSTALLEE."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesNatif()
+            p1, p2, p3, p4 = _patch_phases_natif(faux)
+            with p1, p2, p3, p4:
+                m.installer()
+                self.assertFalse(m.natif_installe())
+                ajout = m.installer(avec_natif=True)
+            self.assertEqual(ajout["statut"], "INSTALLEE")
+            self.assertTrue(ajout["natif"])
+            self.assertEqual(len(faux.urls_telechargees), 1,
+                             "l'ajout du natif ne re-télécharge pas")
+            self.assertEqual(faux.motifs_recus[-1],
+                             MOTIFS_MINIMAUX + MOTIFS_NATIFS)
+            self.assertTrue(m.natif_installe())
+            with p1, p2, p3, p4:
+                troisieme = m.installer(avec_natif=True)
+            self.assertEqual(troisieme["statut"], "DEJA_INSTALLEE")
+            self.assertEqual(len(faux.urls_telechargees), 1)
+
+    def test_chemin_leanc_sans_installation_leve(self):
+        """Cache vide : chemin_leanc() lève ToolchainAbsente."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            with self.assertRaises(ToolchainAbsente):
+                m.chemin_leanc()
 
 
 # ── lean-toolchain (version.py) ──────────────────────────
@@ -818,6 +1122,37 @@ class TestManifeste(unittest.TestCase):
         self.assertGreater(len(manifeste["fichiers_minimaux"]), 0)
         self.assertTrue(manifeste["url"].startswith("https://"),
                         "l'URL du manifeste doit être HTTPS")
+
+    def test_fichiers_natifs_presents(self):
+        """Clé fichiers_natifs : liste non vide de motifs (kit leanc)."""
+        with open(MANIFESTE_DEFAUT, "r", encoding="utf-8") as f:
+            manifeste = json.load(f)
+        self.assertIn("fichiers_natifs", manifeste,
+                      "clé manquante : fichiers_natifs")
+        natifs = manifeste["fichiers_natifs"]
+        self.assertIsInstance(natifs, list)
+        self.assertGreater(len(natifs), 0)
+        for motif in natifs:
+            self.assertIsInstance(motif, str)
+            self.assertTrue(motif, "motif vide interdit")
+        self.assertIn("bin/leanc", natifs)
+        self.assertGreater(manifeste.get("taille_natif_octets_approx", 0), 0,
+                           "taille_natif_octets_approx doit être mesurée")
+
+    def test_motifs_synchronises_avec_extract(self):
+        """Égalité stricte manifeste <-> constantes extract.py.
+
+        Garde anti-dérive : le manifeste est documentaire, extract.py fait
+        foi à l'exécution — les deux doivent dire la même chose.
+        """
+        with open(MANIFESTE_DEFAUT, "r", encoding="utf-8") as f:
+            manifeste = json.load(f)
+        self.assertEqual(sorted(manifeste["fichiers_minimaux"]),
+                         sorted(MOTIFS_MINIMAUX),
+                         "dérive : fichiers_minimaux != MOTIFS_MINIMAUX")
+        self.assertEqual(sorted(manifeste["fichiers_natifs"]),
+                         sorted(MOTIFS_NATIFS),
+                         "dérive : fichiers_natifs != MOTIFS_NATIFS")
 
 
 # ── extensions optionnelles Lean/Std (chantier 3) ─────────

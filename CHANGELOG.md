@@ -1,5 +1,24 @@
 # Changelog
 
+## [Non publié] — kit natif leanc (chantier 1, 2026-10-08)
+
+- `ToolchainManager.installer(avec_natif=True)` : extrait le kit natif
+  depuis l'archive officielle déjà en cache — `bin/leanc`, clang 22
+  embarqué, `ld.lld`, archives statiques (`libLean.a`, `libStd.a`,
+  `libLake.a`, ...), en-têtes C (`include/clang`, `include/lean`),
+  objets glibc. `lean --c` + `leanc` produisent un binaire natif lié
+  statiquement (hors libc système) — Hello World validé de bout en bout.
+- Kit natif : 89 membres, 575 228 874 octets mesurés (+575 Mo sur
+  l'installation). Extraction additive : `installer(avec_natif=True)`
+  sur une installation minimale existante n'ajoute que le kit
+  (pas de re-téléchargement) ; marqueur `.valide` enrichi (`natif`).
+- `extract.py` : `MOTIFS_NATIFS` + recréation des liens symboliques
+  (garde anti-traversal) ; `validate.valider_natif()`.
+- Correctif : les 3 motifs `lib/lean/Init.olean[.private|.server]`
+  manquaient dans `MOTIFS_MINIMAUX` (le manifeste les listait depuis
+  f35dd52) — sans eux, une installation fraîche ne peut pas élaborer.
+- 15 nouveaux tests unitaires (réseau mocké).
+
 ## [Non publié] — extensions Lean/Std à la demande (chantier 3, 2026-10-08)
 
 - `phi lean --init --extension std` : installe la bibliothèque Std
