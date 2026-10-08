@@ -24,6 +24,11 @@ import subprocess
 from .download import ErreurTelechargement, ErreurVerification, telecharger
 from .extract import ErreurExtraction, extraire_minimal
 from .validate import ErreurValidation, valider
+from .version import (
+    FormatLeanToolchainInvalide,
+    VersionNonSupportee,
+    lire_version_projet,
+)
 
 CHEMIN_DEFAUT_CACHE = os.path.join(
     os.path.expanduser("~"), ".cache", "phi-complexity", "toolchains"
@@ -163,6 +168,44 @@ class ToolchainManager:
             "chemin_lean": resultat["chemin_lean"],
         }
 
+    # ── version de projet (lean-toolchain) ───────────────────
+
+    def version_demandee_pour(self, fichier_lean):
+        """Version Lean demandée par le projet contenant `fichier_lean`.
+
+        Returns:
+            (version, chemin_fichier) — version normalisée (ex. "4.34.0")
+            et chemin du lean-toolchain trouvé en remontant les parents ;
+            (None, None) si aucun fichier lean-toolchain.
+
+        Raises:
+            FormatLeanToolchainInvalide: fichier trouvé mais inparsable.
+        """
+        dossier = os.path.dirname(os.path.abspath(fichier_lean))
+        return lire_version_projet(dossier)
+
+    def verifier_version_projet(self, dossier):
+        """Vérifie que la version demandée par le projet est installée.
+
+        Args:
+            dossier: répertoire du projet (ou d'un fichier du projet).
+
+        Returns:
+            La version demandée (ex. "4.34.0"), ou None si aucun
+            fichier lean-toolchain n'est trouvé.
+
+        Raises:
+            FormatLeanToolchainInvalide: fichier trouvé mais inparsable.
+            VersionNonSupportee: la version demandée diffère de la seule
+                version installée (multi-versions = évolution future).
+        """
+        demandee, chemin = lire_version_projet(dossier)
+        if demandee is None:
+            return None
+        if demandee != self.version:
+            raise VersionNonSupportee(demandee, self.version, chemin)
+        return demandee
+
     # ── usage ────────────────────────────────────────────
 
     def _env(self):
@@ -175,7 +218,12 @@ class ToolchainManager:
 
         Returns:
             {"rc": int, "stdout": str, "stderr": str, "ok": bool}.
+
+        Raises:
+            VersionNonSupportee: si le projet du fichier demande une autre
+                version de Lean que celle installée.
         """
+        self.verifier_version_projet(os.path.dirname(os.path.abspath(fichier_lean)))
         binaire = self.chemin_lean()
         cmd = [binaire] + (args_extra or []) + [fichier_lean]
         proc = subprocess.run(
@@ -194,6 +242,10 @@ class ToolchainManager:
 
         Returns:
             {"rc": int, "stdout": str, "stderr": str, "ok": bool}.
+
+        Raises:
+            VersionNonSupportee: si le projet du fichier demande une autre
+                version de Lean que celle installée.
         """
         return self.compiler(
             fichier_lean,

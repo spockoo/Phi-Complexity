@@ -17,6 +17,7 @@ Compatible pytest quand il est disponible :
 
 import hashlib
 import io
+import contextlib
 import json
 import os
 import re
@@ -38,8 +39,11 @@ from phi_complexity.toolchain import (
     ErreurTelechargement,
     ErreurValidation,
     ErreurVerification,
+    FormatLeanToolchainInvalide,
     ToolchainAbsente,
     ToolchainManager,
+    VersionNonSupportee,
+    lire_version_projet,
 )
 from phi_complexity.toolchain.download import telecharger
 from phi_complexity.toolchain.extract import MOTIFS_MINIMAUX, extraire_minimal
@@ -540,6 +544,233 @@ class TestToolchainManager(unittest.TestCase):
             self.assertEqual(resultat["rc"], 1)
             self.assertFalse(resultat["ok"])
             self.assertEqual(resultat["stderr"], "erreur\n")
+
+
+# ── lean-toolchain (version.py) ──────────────────────────
+
+class TestLireVersionProjet(unittest.TestCase):
+    """version.lire_version_projet — parsing, remontée, absence (sans réseau)."""
+
+    def test_format_prefixe_organisation(self):
+        """'leanprover/lean4:v4.34.0' → '4.34.0'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            version, chemin = lire_version_projet(tmp)
+            self.assertEqual(version, "4.34.0")
+            self.assertEqual(chemin, os.path.join(tmp, "lean-toolchain"))
+
+    def test_format_version_bare(self):
+        """'v4.34.0' (format récent) → '4.34.0'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("v4.34.0\n")
+            version, chemin = lire_version_projet(tmp)
+            self.assertEqual(version, "4.34.0")
+            self.assertTrue(chemin.endswith("lean-toolchain"))
+
+    def test_format_sans_prefixe_v(self):
+        """'4.34.0' sans 'v' → '4.34.0' (toléré)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("  4.34.0  \n")
+            version, _ = lire_version_projet(tmp)
+            self.assertEqual(version, "4.34.0")
+
+    def test_lignes_vides_ignorees(self):
+        """Les lignes vides avant/après sont ignorées."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("\n\nleanprover/lean4:v4.34.0\n\n")
+            version, _ = lire_version_projet(tmp)
+            self.assertEqual(version, "4.34.0")
+
+    def test_remontee_dossiers_parents(self):
+        """Le fichier est trouvé en remontant depuis un sous-dossier."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            profond = os.path.join(tmp, "src", "sous", "dossier")
+            os.makedirs(profond)
+            version, chemin = lire_version_projet(profond)
+            self.assertEqual(version, "4.34.0")
+            self.assertEqual(chemin, os.path.join(tmp, "lean-toolchain"))
+
+    def test_plus_proche_gagne(self):
+        """Deux lean-toolchain : celui du dossier le plus proche gagne."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            sous = os.path.join(tmp, "projet")
+            os.makedirs(sous)
+            with open(os.path.join(sous, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("v4.33.0\n")
+            version, chemin = lire_version_projet(sous)
+            self.assertEqual(version, "4.33.0")
+            self.assertEqual(chemin, os.path.join(sous, "lean-toolchain"))
+
+    def test_absence_fichier(self):
+        """Aucun lean-toolchain → (None, None), pas d'exception."""
+        with tempfile.TemporaryDirectory() as tmp:
+            version, chemin = lire_version_projet(tmp)
+            self.assertIsNone(version)
+            self.assertIsNone(chemin)
+
+    def test_contenu_invalide_leve(self):
+        """Contenu inparsable → FormatLeanToolchainInvalide."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("ceci n'est pas une version\n")
+            with self.assertRaises(FormatLeanToolchainInvalide):
+                lire_version_projet(tmp)
+
+    def test_fichier_vide_leve(self):
+        """Fichier vide → FormatLeanToolchainInvalide."""
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "lean-toolchain"), "w").close()
+            with self.assertRaises(FormatLeanToolchainInvalide):
+                lire_version_projet(tmp)
+
+
+class TestVersionProjetManager(unittest.TestCase):
+    """ToolchainManager — détection et refus de version non supportée."""
+
+    def _gestionnaire(self, tmp):
+        cache = os.path.join(tmp, "cache")
+        return ToolchainManager(cache_dir=cache)
+
+    def test_version_correspondante_passe(self):
+        """lean-toolchain sur 4.34.0 → verifier retourne la version."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            m = self._gestionnaire(tmp)
+            self.assertEqual(m.verifier_version_projet(tmp), "4.34.0")
+
+    def test_absence_fichier_retourne_none(self):
+        """Sans lean-toolchain → None, pas d'exception."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            self.assertIsNone(m.verifier_version_projet(tmp))
+
+    def test_version_differente_leve_version_non_supportee(self):
+        """Version demandée ≠ 4.34.0 → VersionNonSupportee avec attributs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            chemin_tc = os.path.join(tmp, "lean-toolchain")
+            with open(chemin_tc, "w", encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.33.0\n")
+            m = self._gestionnaire(tmp)
+            with self.assertRaises(VersionNonSupportee) as ctx:
+                m.verifier_version_projet(tmp)
+            e = ctx.exception
+            self.assertEqual(e.demandee, "4.33.0")
+            self.assertEqual(e.disponible, "4.34.0")
+            self.assertEqual(e.chemin, chemin_tc)
+            message = str(e)
+            self.assertIn("4.33.0", message, "le message cite la demandée")
+            self.assertIn("4.34.0", message, "le message cite la disponible")
+            self.assertIn("multi-versions", message,
+                          "le message documente l'évolution future")
+
+    def test_compiler_refuse_sans_appeler_lean(self):
+        """compiler() lève AVANT subprocess.run si version non supportée."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("v4.33.0\n")
+            m = self._gestionnaire(tmp)
+            fichier = os.path.join(tmp, "Test.lean")
+            with patch("phi_complexity.toolchain.manager.subprocess.run") \
+                    as faux_run:
+                with self.assertRaises(VersionNonSupportee):
+                    m.compiler(fichier)
+            faux_run.assert_not_called()
+
+    def test_compiler_passe_la_verification_si_version_correspondante(self):
+        """Version OK → compiler() atteint chemin_lean() (pas d'install)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("v4.34.0\n")
+            m = self._gestionnaire(tmp)
+            fichier = os.path.join(tmp, "Test.lean")
+            with patch("phi_complexity.toolchain.manager.subprocess.run",
+                       ) as faux_run:
+                # La vérification de version passe ; chemin_lean() lève
+                # ToolchainAbsente car rien n'est installé (pas d'install ici).
+                with self.assertRaises(ToolchainAbsente):
+                    m.compiler(fichier)
+            faux_run.assert_not_called()
+
+    def test_version_demandee_pour(self):
+        """version_demandee_pour() : (version, chemin) depuis un fichier."""
+        with tempfile.TemporaryDirectory() as tmp:
+            chemin_tc = os.path.join(tmp, "lean-toolchain")
+            with open(chemin_tc, "w", encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            m = self._gestionnaire(tmp)
+            version, chemin = m.version_demandee_pour(
+                os.path.join(tmp, "src", "Test.lean"))
+            self.assertEqual(version, "4.34.0")
+            self.assertEqual(chemin, chemin_tc)
+
+
+# ── CLI : phi lean --version avec lean-toolchain ──────────
+
+class TestCliLeanVersion(unittest.TestCase):
+    """_executer_lean --version : affichage projet, jamais de traceback."""
+
+    def _args_version(self):
+        return SimpleNamespace(init=False, version=True, ou=False,
+                               fichier=None, exec=False, timeout=300)
+
+    def _lancer(self, args, dossier):
+        from phi_complexity.cli import _executer_lean
+        precedent = os.getcwd()
+        try:
+            os.chdir(dossier)
+            with contextlib.redirect_stdout(io.StringIO()) as tampon:
+                code = _executer_lean(args)
+            return code, tampon.getvalue()
+        finally:
+            os.chdir(precedent)
+
+    def test_version_affiche_projet_detecte(self):
+        """--version avec lean-toolchain valide → ligne Projet affichée."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("leanprover/lean4:v4.34.0\n")
+            code, sortie = self._lancer(self._args_version(), tmp)
+            self.assertEqual(code, 0)
+            self.assertIn("4.34.0", sortie)
+            self.assertIn("lean-toolchain", sortie)
+
+    def test_version_lean_toolchain_invalide_sans_traceback(self):
+        """--version avec lean-toolchain invalide → message, pas d'exception."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "lean-toolchain"), "w",
+                      encoding="utf-8") as f:
+                f.write("pas une version du tout\n")
+            code, sortie = self._lancer(self._args_version(), tmp)
+            self.assertEqual(code, 0, "aucune exception ne doit fuir")
+            self.assertIn("invalide", sortie)
+
+    def test_version_sans_lean_toolchain(self):
+        """--version sans lean-toolchain → pas de ligne Projet."""
+        with tempfile.TemporaryDirectory() as tmp:
+            code, sortie = self._lancer(self._args_version(), tmp)
+            self.assertEqual(code, 0)
+            self.assertNotIn("Projet", sortie)
 
 
 # ── manifeste ────────────────────────────────────────────

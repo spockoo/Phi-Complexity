@@ -519,6 +519,10 @@ Exemples :
     lean_cmd.add_argument("--init", action="store_true", help="Télécharge et installe la toolchain Lean mini (125 Mo)")
     lean_cmd.add_argument("--version", action="store_true", help="Affiche la version de la toolchain installée")
     lean_cmd.add_argument("--ou", action="store_true", help="Affiche le chemin d'installation")
+    lean_cmd.add_argument("--update-mathlib", action="store_true",
+                          help="Met à jour Mathlib (plan affiché, feu vert requis si >100 Mo)")
+    lean_cmd.add_argument("--mathlib-version", action="store_true",
+                          help="Affiche la version Mathlib installée")
     lean_cmd.add_argument("--timeout", type=int, default=300, help="Délai max compilation (s)")
     groupe = lean_cmd.add_mutually_exclusive_group()
     groupe.add_argument("--exec", action="store_true", help="Exécute via lean --run au lieu de compiler")
@@ -1809,6 +1813,8 @@ def _executer_lean(args: argparse.Namespace) -> int:
       phi lean preuve.lean --exec   # exécute via lean --run
     """
     from .toolchain import ToolchainManager, ToolchainAbsente
+    from .toolchain import VersionNonSupportee, lire_version_projet
+    from .toolchain.version import FormatLeanToolchainInvalide
     from .toolchain.download import ErreurTelechargement, ErreurVerification
     from .toolchain.extract import ErreurExtraction
     from .toolchain.validate import ErreurValidation
@@ -1856,10 +1862,56 @@ def _executer_lean(args: argparse.Namespace) -> int:
             print("Lean %s" % manager.version)
         else:
             print("toolchain absente (phi lean --init)")
+        version_projet, chemin_tc = None, None
+        try:
+            version_projet, chemin_tc = lire_version_projet(os.getcwd())
+        except FormatLeanToolchainInvalide as e:
+            print("Projet : lean-toolchain invalide — %s" % e)
+        if chemin_tc is not None:
+            print("Projet (lean-toolchain : %s) : version %s"
+                  % (chemin_tc, version_projet))
         return 0
 
     if args.ou:
         print(manager.rep_install)
+        return 0
+
+    if getattr(args, "mathlib_version", False):
+        from .toolchain import mathlib as _ml
+        v = _ml.version_installee()
+        if v:
+            print("Mathlib %s (%s)" % (v.get("tag"), v.get("commit", "")[:12]))
+        else:
+            print("Mathlib non installée (phi lean --update-mathlib)")
+        return 0
+
+    if getattr(args, "update_mathlib", False):
+        from .toolchain import mathlib as _ml
+        version_lean = getattr(manager, "version", "4.34.0")
+        try:
+            plan = _ml.plan_mise_a_jour(version_lean)
+        except _ml.CacheExpire as e:
+            print("❌ %s" % e)
+            return 1
+        except (_ml.VersionIntrouvable, _ml.ErreurReseauMathlib) as e:
+            print("❌ %s" % e)
+            return 1
+        taille_go = plan["taille_estimee_octets"] / (1024 ** 3)
+        print("Plan Mathlib : %s (%s)" % (plan["tag"], plan["commit"][:12]))
+        print("  cache précompilé : disponible")
+        print("  taille estimée   : ≥%.1f Go" % taille_go)
+        print("  déjà installée   : %s" % ("oui" if plan["deja_installee"] else "non"))
+        if plan["deja_installee"]:
+            return 0
+        try:
+            _ml.verifier_feu_vert(plan, feu_vert=False)
+        except _ml.TelechargementRefuse as e:
+            print("\n⛔ %s" % e)
+            print("Le téléchargement réel (>100 Mo) attend le feu vert de Tomy.")
+            return 3
+        # Si on arrive ici, le téléchargement est autorisé (petit ou feu vert).
+        print("Téléchargement non implémenté dans cette version "
+              "(extraction .ltar à venir).")
         return 0
 
     fichier = getattr(args, "fichier", None)
@@ -1867,6 +1919,16 @@ def _executer_lean(args: argparse.Namespace) -> int:
         print("Usage : phi lean [--init|--version|--ou] [fichier.lean] "
               "[--exec] [--timeout N]")
         return 2
+
+    try:
+        manager.verifier_version_projet(
+            os.path.dirname(os.path.abspath(fichier)))
+    except VersionNonSupportee as e:
+        print("❌ %s" % e)
+        return 1
+    except FormatLeanToolchainInvalide as e:
+        print("❌ lean-toolchain invalide : %s" % e)
+        return 1
 
     if not manager.est_installee():
         print("Toolchain Lean absente — installation en cours…")
@@ -1879,6 +1941,10 @@ def _executer_lean(args: argparse.Namespace) -> int:
         else:
             resultat = manager.compiler(fichier, timeout_s=args.timeout)
     except ToolchainAbsente as e:
+        print("❌ %s" % e)
+        return 1
+    except VersionNonSupportee as e:
+        # Double garde : compiler()/executer() vérifient aussi.
         print("❌ %s" % e)
         return 1
     if resultat.get("stdout"):
