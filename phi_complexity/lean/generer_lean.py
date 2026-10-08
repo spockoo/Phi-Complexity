@@ -28,7 +28,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lecteur_phiast import MAGIC, TRAILER_MAGIC, VERSION2
+from phi_complexity.portable.lecteur_phiast import MAGIC, TRAILER_MAGIC, VERSION2
 
 
 class GenerationError(Exception):
