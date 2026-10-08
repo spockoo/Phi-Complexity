@@ -11,23 +11,23 @@ aux obligations de la GNU General Public License v3.
 Si vous utilisez Phi-Complexity sous licence GPL v3 (code source publié),
 vous n'avez pas besoin de cette licence commerciale.
 
-## Tarifs (annuels, par nombre de développeurs)
+## Tarifs (CAD, par utilisateur)
 
-| Taille d'équipe | Prix / an |
-|-----------------|-----------|
-| Indépendant / petite équipe (1-5 développeurs) | 200 $ USD |
-| PME (6-50 développeurs) | 500 – 1 500 $ USD (selon taille) |
-| Grande entreprise (51+ développeurs) | Sur devis |
+| Formule | Prix |
+|---------|------|
+| Mensuel | 29 $ CAD / mois |
+| Annuel | 290 $ CAD / an |
+
+Pour les équipes ou usages particuliers (volume, conditions spécifiques),
+contact : tiloup777@outlook.fr
 
 ## Conditions
 
-- La licence est annuelle, renouvelable.
-- Le nombre de développeurs correspond au nombre de personnes
-  utilisant directement ou indirectement Phi-Complexity dans
-  l'organisation.
+- La licence est un abonnement mensuel ou annuel, renouvelable.
+- La licence est par utilisateur.
 - Licence basée sur la confiance — aucun système de vérification
   technique, aucune télémétrie, aucun appel réseau.
-- En cas de doute sur le palier applicable, contactez-nous.
+- En cas de doute, contactez-nous.
 
 ## Contact
 
@@ -39,8 +39,9 @@ usage prévu. Réponse sous 7 jours ouvrés.
 
 ## Paiement
 
-Virement Interac ou virement bancaire. Une facture est émise à chaque
-souscription. (Paiement par carte via Stripe à venir.)
+Paiement par carte via Stripe (liens de paiement). Une facture est émise
+à chaque souscription. Virement Interac ou virement bancaire également
+possibles sur demande.
 
 ## Versions concernées
 
