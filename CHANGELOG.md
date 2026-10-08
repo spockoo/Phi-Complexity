@@ -1,5 +1,20 @@
 # Changelog
 
+## [Non publié] — extensions Lean/Std à la demande (chantier 3, 2026-10-08)
+
+- `phi lean --init --extension std` : installe la bibliothèque Std
+  (`import Std`, +290 Mo, 1 467 fichiers) depuis l'archive officielle
+  déjà en cache — aucun téléchargement supplémentaire.
+- `phi lean --init --extension lean` : installe la bibliothèque Lean
+  (`import Lean`, métaprogrammation + tactiques custom, +1,2 Go,
+  5 121 fichiers — inclut Std par fermeture d'imports).
+- Mesures exactes et preuves d'élagage dans `TOOLCHAIN_MINI_SPEC.md` §9 :
+  3 variantes olean requises, aucun sous-arbre élagable, pas de mini
+  Lean utile (`Lean.Elab.Tactic` seul = 963 Mo).
+- `ToolchainManager.installer_extension()` : idempotent (marqueur
+  `.valide-ext-<nom>`), validation par élaboration réelle.
+- 16 nouveaux tests unitaires (réseau mocké) — 56 tests OK.
+
 ## [0.17.0] — 2026-10-06 — Double licence
 
 - **Double licence** : GPL v3 (usage libre et open source) OU Licence

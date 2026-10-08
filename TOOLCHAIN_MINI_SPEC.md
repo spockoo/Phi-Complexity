@@ -173,7 +173,7 @@ lean-mini/
 ## 7. Limites connues
 
 1. **Pas de `lake`** — le mini ne fait pas de gestion de projet. Usage direct `lean` uniquement.
-2. **Pas de `Std`/`Lean`** — si le code fait `import Std` ou `import Lean`, il faut ajouter ces répertoires (1,6 Go supplémentaires).
+2. **Pas de `Std`/`Lean` par défaut** — si le code fait `import Std` ou `import Lean`, installer l'extension à la demande : `phi lean --init --extension std` (+290 Mo) ou `--extension lean` (+1,2 Go). Voir §9 (chantier 3, 2026-10-08) — l'estimation « 1,6 Go » est remplacée par les mesures exactes : 1 292 721 440 octets (1 232,8 Mo).
 3. **Pas d'exécutables natifs** par défaut — `--run` (interpréteur) fonctionne, mais pas de binaires standalone sans le tier C (+224 Mo).
 4. **Linux x86_64 uniquement** — autres plateformes non testées.
 5. **Strip** : les symboles de debug sont retirés. En cas de crash natif, pas de backtrace lisible.
@@ -204,3 +204,43 @@ lean-mini/
 
 *Toutes les mesures sont réelles, effectuées le 2026-10-08 sur cette VM.*
 *Le prototype `mini3/` compile et exécute correctement.*
+
+---
+
+## 9. Extensions Lean/Std à la demande (chantier 3, 2026-10-08)
+
+**Verdict : INTÉGRABLE en OPT-IN** (jamais par défaut : +1,2 Go = 3,4× l'install de base de 522 Mo).
+
+### Mesures exactes (archive officielle `lean-4.34.0-linux.tar.zst`, déjà en cache)
+
+| Extension | `import` | Modules (fermeture) | Fichiers | Octets | Mo |
+|---|---|---|---|---|---|
+| `std` | `Std` | 489 Std + 0 Lean | 1 467 | 304 056 336 | 290,0 |
+| `lean` | `Lean` | 1 217 Lean + 489 Std | 5 121 | 1 292 721 440 | 1 232,8 |
+
+Détail par variante (3 variantes `.olean` requises, voir ci-dessous) :
+
+| | `.olean` | `.olean.private` | `.olean.server` |
+|---|---|---|---|
+| `Lean/` (1 217 mod.) | 120,9 Mo | 811,8 Mo | 10,2 Mo |
+| `Std/` (488 mod.) | 106,0 Mo | 176,1 Mo | 7,8 Mo |
+
+(`.ir` 318,6 Mo + `.ilean` 60,1 Mo + `.ir.sig` 0,3 Mo ne sont jamais lus par `lean` au runtime — non extraits.)
+
+### Résultats d'élagage (tous vérifiés empiriquement par élimination + `lean`)
+
+1. **Les 3 variantes olean sont REQUISES** — sans `.olean.private` ou sans `.olean.server`, `lean` échoue immédiatement (`failed to open file`). Le poste incompressible est donc ~1,23 Go.
+2. **`import Std` ne dépend d'AUCUN module Lean** (fermeture = 489 Std + 530 Init) — d'où le palier `std` à 290 Mo, validé empiriquement sans `Lean/` présent.
+3. **`import Lean` inclut tout Std** (fermeture = 1 217 Lean + 489 Std + 649 Init) — le palier `lean` couvre donc les deux imports.
+4. **Aucun sous-arbre élagable pour `import Lean`** — sans `Lean/Server/**`, l'import échoue (`Lean.Server.Rpc.Basic` manquant). 2 modules orphelins existent (importés par personne : `Lean.Elab.ErrorUtils`, `Lean.PrettyPrinter.Delaborator.DeclWithSig`, ~0,2 Mo) — non retirés : gain négligeable, risque inutile.
+5. **Pas de « mini Lean » utile** — `import Lean.Elab.Tactic` seul exige déjà 904 modules Lean + 489 Std = 963 Mo (78 % du complet). Les tactiques custom requièrent donc le palier `lean` entier.
+6. **Tactiques custom : OK** — 3 styles compilent et s'élaborent (`macro`, `elab_rules`, `@[tactic]`) ; `import Lean` s'élabore en ~26 s au premier chargement.
+
+### Intégration (locale uniquement, jamais poussée sans ordre)
+
+- `TOOLCHAIN_MANIFEST.json` : section `extensions` (motifs précis + tailles mesurées, synchronisés par test avec `extract.py`).
+- `extract.py` : `MOTIFS_EXTENSION_STD`, `MOTIFS_EXTENSION_LEAN` (ce dernier inclut Std par fermeture).
+- `manager.py` : `ToolchainManager.installer_extension(nom)` — idempotent (marqueur `.valide-ext-<nom>`), extrait depuis l'archive **déjà en cache** (aucun téléchargement supplémentaire ; re-téléchargée vérifiée si absente), valide par élaboration réelle (`validate.valider_extension` : `import <Racine>` + `#check` témoin).
+- `phi lean --init --extension {std,lean}`.
+- Tests : 16 nouveaux tests (motifs sélectifs sur archive réelle, validation mockée, flux manager mocké, garde de synchronisation manifeste↔code) — 56 tests OK, réseau mocké.
+- **Option « téléchargement séparé » évaluée et écartée** : inutile — l'archive officielle complète (580 Mo) est déjà le seul téléchargement ; la séparation se fait à l'extraction, à la demande, sans octet réseau de plus. Le téléchargement reste donc inchangé quel que soit le palier choisi.

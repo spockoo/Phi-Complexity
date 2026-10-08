@@ -517,6 +517,12 @@ Exemples :
 
     lean_cmd = subparsers.add_parser("lean", help="Toolchain Lean mini : installation et compilation")
     lean_cmd.add_argument("--init", action="store_true", help="Télécharge et installe la toolchain Lean mini (125 Mo)")
+    lean_cmd.add_argument("--extension", choices=["std", "lean"], default=None,
+                          help="Avec --init : installe aussi l'extension optionnelle "
+                               "'std' (import Std, +290 Mo) ou 'lean' (import Lean, "
+                               "+1,2 Go, inclut std). Extraction à la demande depuis "
+                               "l'archive déjà en cache (aucun téléchargement "
+                               "supplémentaire).")
     lean_cmd.add_argument("--version", action="store_true", help="Affiche la version de la toolchain installée")
     lean_cmd.add_argument("--ou", action="store_true", help="Affiche le chemin d'installation")
     lean_cmd.add_argument("--update-mathlib", action="store_true",
@@ -1807,6 +1813,8 @@ def _executer_lean(args: argparse.Namespace) -> int:
 
     Exemples :
       phi lean --init              # télécharge et installe la toolchain
+      phi lean --init --extension std   # + bibliothèque Std (import Std)
+      phi lean --init --extension lean  # + bibliothèque Lean (import Lean)
       phi lean --version            # affiche la version installée
       phi lean --ou                 # affiche le chemin d'installation
       phi lean preuve.lean          # compile le fichier
@@ -1834,6 +1842,14 @@ def _executer_lean(args: argparse.Namespace) -> int:
                   end="\r", flush=True)
         elif phase == "validation":
             print("\nValidation…", flush=True)
+        elif phase == "extension_extraction":
+            print("Extension '%s' : %d fichiers (%.1f Mo)"
+                  % (info.get("extension"), info.get("fichiers", 0),
+                     info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "extension_validation":
+            print("\nValidation de l'extension '%s'…"
+                  % info.get("extension"), flush=True)
         elif phase == "terminee":
             print("\nInstallation terminée : %s" % info.get("rep", ""))
 
@@ -1855,7 +1871,23 @@ def _executer_lean(args: argparse.Namespace) -> int:
         return True
 
     if args.init:
-        return 0 if _installer_ou_erreur() else 1
+        if not _installer_ou_erreur():
+            return 1
+        extension = getattr(args, "extension", None)
+        if extension:
+            try:
+                resultat_ext = manager.installer_extension(
+                    extension, progression=_afficher_progression)
+            except ValueError as e:
+                print("❌ Extension : %s" % e)
+                return 1
+            except (ErreurExtraction, ErreurValidation) as e:
+                print("❌ Échec de l'extension '%s' : %s" % (extension, e))
+                return 1
+            print("Extension '%s' installée : %s (%s)"
+                  % (extension, resultat_ext.get("statut"),
+                     resultat_ext.get("rep")))
+        return 0
 
     if args.version:
         if manager.est_installee():

@@ -22,8 +22,13 @@ import os
 import subprocess
 
 from .download import ErreurTelechargement, ErreurVerification, telecharger
-from .extract import ErreurExtraction, extraire_minimal
-from .validate import ErreurValidation, valider
+from .extract import (
+    ErreurExtraction,
+    MOTIFS_EXTENSION_LEAN,
+    MOTIFS_EXTENSION_STD,
+    extraire_minimal,
+)
+from .validate import ErreurValidation, valider, valider_extension
 from .version import (
     FormatLeanToolchainInvalide,
     VersionNonSupportee,
@@ -36,6 +41,14 @@ CHEMIN_DEFAUT_CACHE = os.path.join(
 MANIFESTE_DEFAUT = os.path.join(os.path.dirname(__file__), "TOOLCHAIN_MANIFEST.json")
 NOM_MARQUEUR = ".valide"
 NOM_ARCHIVE = "lean.tar.zst"
+
+# Extensions optionnelles : nom -> motifs d'extraction (extract.py).
+# Le manifeste miroite ces motifs à titre documentaire (+ tailles mesurées) ;
+# un test garde l'égalité stricte entre les deux sources.
+EXTENSIONS_MOTIFS = {
+    "std": MOTIFS_EXTENSION_STD,
+    "lean": MOTIFS_EXTENSION_LEAN,
+}
 
 
 class ToolchainAbsente(Exception):
@@ -206,13 +219,137 @@ class ToolchainManager:
             raise VersionNonSupportee(demandee, self.version, chemin)
         return demandee
 
+    # ── extensions optionnelles ──────────────────────────
+
+    def extensions_disponibles(self):
+        """Noms des extensions déclarées par le manifeste (ex. ["std", "lean"])."""
+        return list(self.manifeste.get("extensions", {}).keys())
+
+    def _chemin_marqueur_extension(self, nom):
+        return os.path.join(self.rep_install, ".valide-ext-%s" % nom)
+
+    def _verifier_nom_extension(self, nom):
+        disponibles = self.extensions_disponibles()
+        if nom not in disponibles:
+            raise ValueError(
+                "extension inconnue : %r (disponibles : %s)"
+                % (nom, ", ".join(disponibles) or "aucune")
+            )
+        return self.manifeste["extensions"][nom]
+
+    def extension_installee(self, nom):
+        """True ssi le marqueur `.valide-ext-<nom>` existe avec le bon SHA256."""
+        self._verifier_nom_extension(nom)
+        chemin = self._chemin_marqueur_extension(nom)
+        if not os.path.isfile(chemin):
+            return False
+        try:
+            with open(chemin, "r", encoding="utf-8") as f:
+                contenu = json.load(f)
+            return (
+                contenu.get("sha256") == self.manifeste["sha256"]
+                and contenu.get("version") == self.version
+                and contenu.get("extension") == nom
+            )
+        except (OSError, ValueError):
+            return False
+
+    def installer_extension(self, nom, progression=None):
+        """Installe une extension optionnelle (idempotent).
+
+        L'extension s'extrait de l'archive officielle DÉJÀ en cache
+        (aucun téléchargement supplémentaire si elle y est ; sinon elle
+        est re-téléchargée avec vérification SHA256), puis est validée
+        par élaboration réelle (`import <Racine>`).
+
+        Args:
+            nom: "std" (`import Std`, +290 Mo) ou "lean"
+                (`import Lean`, +1,2 Go — inclut Std par fermeture).
+            progression: callable optionnel(phase, info) où phase ∈
+                {"deja_installee", "telechargement", "extraction",
+                 "validation", "extension_extraction",
+                 "extension_validation", "terminee"}.
+
+        Returns:
+            dict de statut (statut ∈ {"DEJA_INSTALLEE",
+            "EXTENSION_INSTALLEE"}).
+
+        Raises:
+            ValueError: nom d'extension inconnu.
+        """
+        def _sig(phase, info=None):
+            if progression is not None:
+                progression(phase, info or {})
+
+        meta = self._verifier_nom_extension(nom)
+
+        if self.extension_installee(nom):
+            _sig("deja_installee", {"rep": self.rep_install,
+                                    "extension": nom})
+            return {
+                "statut": "DEJA_INSTALLEE",
+                "rep": self.rep_install,
+                "extension": nom,
+            }
+
+        # La base d'abord (idempotent : ne re-télécharge pas si présente).
+        if not self.est_installee():
+            self.installer(progression=progression)
+
+        # L'archive a pu disparaître du cache : la re-télécharger si besoin.
+        if not os.path.isfile(self.chemin_archive):
+            url = _url_effective(self.manifeste)
+            _sig("telechargement", {"url": url, "extension": nom})
+            telecharger(
+                url,
+                self.chemin_archive,
+                self.manifeste["sha256"],
+                progression=lambda n: _sig(
+                    "telechargement", {"octets": n, "extension": nom}),
+            )
+
+        _sig("extension_extraction", {"extension": nom,
+                                      "archive": self.chemin_archive})
+        extraire_minimal(
+            self.chemin_archive,
+            self.rep_install,
+            motifs=EXTENSIONS_MOTIFS[nom],
+            progression=lambda nf, no: _sig(
+                "extension_extraction",
+                {"extension": nom, "fichiers": nf, "octets": no},
+            ),
+        )
+
+        _sig("extension_validation", {"extension": nom})
+        resultat = valider_extension(
+            self.rep_install, meta["module_racine"])
+
+        with open(self._chemin_marqueur_extension(nom), "w",
+                  encoding="utf-8") as f:
+            json.dump(
+                {
+                    "version": self.version,
+                    "sha256": self.manifeste["sha256"],
+                    "extension": nom,
+                    "valide_par": resultat,
+                },
+                f,
+            )
+        _sig("terminee", {"rep": self.rep_install, "extension": nom})
+        return {
+            "statut": "EXTENSION_INSTALLEE",
+            "rep": self.rep_install,
+            "version": self.version,
+            "extension": nom,
+            "module_racine": meta["module_racine"],
+        }
+
     # ── usage ────────────────────────────────────────────
 
     def _env(self):
         env = dict(os.environ)
         env["LEAN_PATH"] = self.env_lean_path()
         return env
-
     def compiler(self, fichier_lean, args_extra=None, timeout_s=300):
         """Élabore `fichier_lean` avec le lean mini.
 

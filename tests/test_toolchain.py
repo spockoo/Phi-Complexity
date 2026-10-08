@@ -2,7 +2,8 @@
 """Tests unitaires du module ``phi_complexity.toolchain``.
 
 Périmètre : téléchargement vérifié (download), extraction sélective
-(extract), validation (validate), orchestration (manager) et manifeste.
+(extract), validation (validate), orchestration (manager), manifeste,
+et extensions optionnelles Lean/Std (chantier 3).
 
 RÈGLE DURE : aucun accès réseau réel. Le réseau est systématiquement
 mocké : seam ``_ouvreur`` pour ``telecharger``, faux téléchargeur /
@@ -34,7 +35,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import zstandard
 
 from phi_complexity.toolchain import (
+    EXTENSIONS_MOTIFS,
     MANIFESTE_DEFAUT,
+    MOTIFS_EXTENSION_LEAN,
+    MOTIFS_EXTENSION_STD,
     ErreurExtraction,
     ErreurTelechargement,
     ErreurValidation,
@@ -44,8 +48,15 @@ from phi_complexity.toolchain import (
     ToolchainManager,
     VersionNonSupportee,
     lire_version_projet,
+    valider_extension,
 )
 from phi_complexity.toolchain.download import telecharger
+from phi_complexity.toolchain.extract import (
+    MOTIFS_EXTENSION_LEAN as MOTIFS_LEAN_EXTRACT,
+)
+from phi_complexity.toolchain.extract import (
+    MOTIFS_EXTENSION_STD as MOTIFS_STD_EXTRACT,
+)
 from phi_complexity.toolchain.extract import MOTIFS_MINIMAUX, extraire_minimal
 from phi_complexity.toolchain.validate import valider
 
@@ -790,6 +801,389 @@ class TestManifeste(unittest.TestCase):
         self.assertGreater(len(manifeste["fichiers_minimaux"]), 0)
         self.assertTrue(manifeste["url"].startswith("https://"),
                         "l'URL du manifeste doit être HTTPS")
+
+
+class TestManifeste(unittest.TestCase):
+    """TOOLCHAIN_MANIFEST.json — structure et format du sha256."""
+
+    def test_manifeste_valide(self):
+        """JSON lisible, clés requises présentes, sha256 = 64 hex."""
+        with open(MANIFESTE_DEFAUT, "r", encoding="utf-8") as f:
+            manifeste = json.load(f)
+        for cle in ("version", "url", "sha256", "fichiers_minimaux"):
+            self.assertIn(cle, manifeste, "clé manquante : %s" % cle)
+        self.assertRegex(manifeste["sha256"], r"^[0-9a-fA-F]{64}$",
+                         "le sha256 doit être 64 caractères hexadécimaux")
+        self.assertIsInstance(manifeste["fichiers_minimaux"], list)
+        self.assertGreater(len(manifeste["fichiers_minimaux"]), 0)
+        self.assertTrue(manifeste["url"].startswith("https://"),
+                        "l'URL du manifeste doit être HTTPS")
+
+
+# ── extensions optionnelles Lean/Std (chantier 3) ─────────
+
+def _fabriquer_archive_extensions(chemin):
+    """Archive .tar.zst de test avec des modules Lean/Std factices.
+
+    Contient de quoi tester la sélectivité des motifs d'extension :
+    racines Std.olean(*), un sous-module Std, des pièges Lean et des
+    variantes non-olean (.ir, .ilean) qui doivent rester dehors.
+    """
+    membres = [
+        ("lean-4.34.0-linux/lib/lean/Std.olean", b"OLEAN-std", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std.olean.private",
+         b"OLEAN-std-prive", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std.olean.server",
+         b"OLEAN-std-srv", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std/Data/HashMap.olean",
+         b"OLEAN-hm", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std/Data/HashMap.olean.private",
+         b"OLEAN-hm-prive", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std/Data/HashMap.olean.server",
+         b"OLEAN-hm-srv", 0o644),
+        # --- pièges : autre bibliothèque ---
+        ("lean-4.34.0-linux/lib/lean/Lean.olean", b"PIEGE", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Lean/Meta.olean", b"PIEGE", 0o644),
+        # --- pièges : variantes non lues par lean au runtime ---
+        ("lean-4.34.0-linux/lib/lean/Std/Data/HashMap.ir",
+         b"PIEGE-IR", 0o644),
+        ("lean-4.34.0-linux/lib/lean/Std/Data/HashMap.ilean",
+         b"PIEGE-ILEAN", 0o644),
+    ]
+    tampon = io.BytesIO()
+    with tarfile.open(fileobj=tampon, mode="w") as tar:
+        for nom, contenu, mode in membres:
+            info = tarfile.TarInfo(nom)
+            info.size = len(contenu)
+            info.mode = mode
+            tar.addfile(info, io.BytesIO(contenu))
+    compresseur = zstandard.ZstdCompressor()
+    with open(chemin, "wb") as f:
+        f.write(compresseur.compress(tampon.getvalue()))
+
+
+class TestMotifsExtensions(unittest.TestCase):
+    """extract — sélectivité des motifs d'extension sur archive réelle."""
+
+    def test_motifs_std_selectionnent_std_uniquement(self):
+        """MOTIFS_EXTENSION_STD : racines + arbre Std, rien d'autre."""
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = os.path.join(tmp, "lean.tar.zst")
+            _fabriquer_archive_extensions(archive)
+            dest = os.path.join(tmp, "ext")
+            resultat = extraire_minimal(
+                archive, dest, motifs=MOTIFS_EXTENSION_STD)
+            attendus = [
+                "lib/lean/Std.olean",
+                "lib/lean/Std.olean.private",
+                "lib/lean/Std.olean.server",
+                "lib/lean/Std/Data/HashMap.olean",
+                "lib/lean/Std/Data/HashMap.olean.private",
+                "lib/lean/Std/Data/HashMap.olean.server",
+            ]
+            for relatif in attendus:
+                self.assertTrue(
+                    os.path.isfile(os.path.join(dest, relatif)),
+                    "manquant : %s" % relatif,
+                )
+            for piege in ("lib/lean/Lean.olean",
+                          "lib/lean/Lean/Meta.olean",
+                          "lib/lean/Std/Data/HashMap.ir",
+                          "lib/lean/Std/Data/HashMap.ilean"):
+                self.assertFalse(
+                    os.path.exists(os.path.join(dest, piege)),
+                    "piège extrait à tort : %s" % piege,
+                )
+            self.assertEqual(resultat["fichiers"], 6)
+
+    def test_motifs_lean_contiennent_std(self):
+        """MOTIFS_EXTENSION_LEAN ⊇ MOTIFS_EXTENSION_STD (fermeture)."""
+        self.assertLessEqual(set(MOTIFS_EXTENSION_STD),
+                             set(MOTIFS_EXTENSION_LEAN),
+                             "l'extension 'lean' doit inclure 'std' "
+                             "(fermeture de `import Lean`)")
+
+    def test_motifs_extensions_documentes(self):
+        """Garde : motifs non vides, tous sous lib/lean/, 3 variantes."""
+        for nom, motifs in (("std", MOTIFS_EXTENSION_STD),
+                            ("lean", MOTIFS_EXTENSION_LEAN)):
+            self.assertGreater(len(motifs), 0)
+            for motif in motifs:
+                self.assertTrue(
+                    motif.startswith("lib/lean/"),
+                    "motif '%s' hors lib/lean/ (%s)" % (motif, nom),
+                )
+            self.assertTrue(any(m.endswith(".olean") and ".private" not in m
+                                and ".server" not in m for m in motifs),
+                            "variante .olean manquante (%s)" % nom)
+            self.assertTrue(any(m.endswith(".olean.private") for m in motifs),
+                            "variante .olean.private manquante (%s)" % nom)
+            self.assertTrue(any(m.endswith(".olean.server") for m in motifs),
+                            "variante .olean.server manquante (%s)" % nom)
+
+
+class TestValiderExtension(unittest.TestCase):
+    """validate.valider_extension — élaboration réelle (binaire mocké)."""
+
+    def test_succes_binaire_reel_mocke(self):
+        """Faux lean qui sort 0 → dict retourné, fichier temp nettoyé."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _faux_lean(tmp)
+            with patch("phi_complexity.toolchain.validate.subprocess.run",
+                       ) as faux_run:
+                faux_run.return_value = SimpleNamespace(
+                    returncode=0, stdout="ok\n", stderr="")
+                resultat = valider_extension(tmp, "Std")
+            cmd = faux_run.call_args[0][0]
+            self.assertTrue(cmd[0].endswith(os.path.join("bin", "lean")))
+            self.assertTrue(cmd[1].endswith(".lean"))
+            env = faux_run.call_args[1]["env"]
+            self.assertEqual(env["LEAN_PATH"],
+                             os.path.join(tmp, "lib", "lean"))
+            self.assertEqual(resultat["module"], "Std")
+            self.assertFalse(os.path.exists(cmd[1]),
+                             "le fichier temporaire doit être supprimé")
+
+    def test_contenu_fichier_importe_le_module(self):
+        """Le fichier élaboré contient bien `import <module>`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _faux_lean(tmp)
+            contenus = []
+
+            def faux_run(cmd, **kwargs):
+                with open(cmd[1], "r", encoding="utf-8") as f:
+                    contenus.append(f.read())
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with patch("phi_complexity.toolchain.validate.subprocess.run",
+                       side_effect=faux_run):
+                valider_extension(tmp, "Lean")
+            self.assertEqual(len(contenus), 1)
+            self.assertIn("import Lean", contenus[0])
+
+    def test_echec_elaboration(self):
+        """rc != 0 → ErreurValidation (détail conservé)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _faux_lean(tmp)
+            with patch("phi_complexity.toolchain.validate.subprocess.run",
+                       ) as faux_run:
+                faux_run.return_value = SimpleNamespace(
+                    returncode=1, stdout="", stderr="unknown module\n")
+                with self.assertRaises(ErreurValidation):
+                    valider_extension(tmp, "Std")
+
+    def test_binaire_absent(self):
+        """Pas de bin/lean → ErreurValidation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ErreurValidation):
+                valider_extension(tmp, "Std")
+
+
+# ── manager : installer_extension ────────────────────────
+
+MANIFESTE_TEST_EXT = {
+    "version": "4.34.0",
+    "url": ("https://github.com/leanprover/lean4/releases/download/"
+            "v4.34.0/lean-4.34.0-linux.tar.zst"),
+    "sha256": "ab" * 32,
+    "fichiers_minimaux": ["bin/lean"],
+    "extensions": {
+        "std": {
+            "description": "extension de test (Std)",
+            "module_racine": "Std",
+            "motifs": MOTIFS_STD_EXTRACT,
+            "fichiers_mesures": 1467,
+            "taille_octets_mesuree": 304056336,
+            "note": "test",
+        },
+        "lean": {
+            "description": "extension de test (Lean)",
+            "module_racine": "Lean",
+            "motifs": MOTIFS_LEAN_EXTRACT,
+            "fichiers_mesures": 5121,
+            "taille_octets_mesuree": 1292721440,
+            "note": "test",
+        },
+    },
+}
+
+
+def _ecrire_manifeste_test_ext(dossier):
+    chemin = os.path.join(dossier, "manifeste-ext.json")
+    with open(chemin, "w", encoding="utf-8") as f:
+        json.dump(MANIFESTE_TEST_EXT, f)
+    return chemin
+
+
+class _FauxPhasesExt(_FauxPhases):
+    """_FauxPhases + extracteur avec motifs capturés + valider_extension."""
+
+    def __init__(self):
+        super().__init__()
+        self.motifs_recus = []
+        self.validations_extension = []
+        self.extractions = 0
+
+    def extraire_minimal(self, archive, dest_dir, motifs=None,
+                         progression=None):
+        self.motifs_recus.append(list(motifs) if motifs else None)
+        self.extractions += 1
+        return super().extraire_minimal(
+            archive, dest_dir, motifs=motifs, progression=progression)
+
+    def valider_extension(self, repertoire, module_racine, timeout_s=600):
+        self.validations_extension.append((repertoire, module_racine))
+        return {"module": module_racine,
+                "chemin_lean": os.path.join(repertoire, "bin", "lean")}
+
+
+def _patch_phases_ext(faux):
+    """Les 3 phases + valider_extension patchées dans le namespace manager."""
+    p1, p2, p3 = _patch_phases(faux)
+    p4 = patch("phi_complexity.toolchain.manager.valider_extension",
+               side_effect=faux.valider_extension)
+    return p1, p2, p3, p4
+
+
+class TestInstallerExtension(unittest.TestCase):
+    """manager.installer_extension — phases mockées, aucun réseau."""
+
+    def _gestionnaire(self, tmp):
+        manifeste = _ecrire_manifeste_test_ext(tmp)
+        return ToolchainManager(cache_dir=os.path.join(tmp, "cache"),
+                                manifeste=manifeste)
+
+    def _installer_base(self, m, faux):
+        p1, p2, p3, p4 = _patch_phases_ext(faux)
+        with p1, p2, p3, p4:
+            m.installer()
+        # simule l'archive restée en cache après installer()
+        with open(m.chemin_archive, "wb") as f:
+            f.write(b"archive-factice")
+
+    def test_extension_inconnue_leve(self):
+        """Nom inconnu → ValueError (extension_installee et installer)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            with self.assertRaises(ValueError):
+                m.extension_installee("nope")
+            with self.assertRaises(ValueError):
+                m.installer_extension("nope")
+
+    def test_flux_complet_std(self):
+        """Base installée → extraction avec les bons motifs → validation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesExt()
+            self._installer_base(m, faux)
+            self.assertFalse(m.extension_installee("std"))
+            p1, p2, p3, p4 = _patch_phases_ext(faux)
+            with p1, p2, p3, p4:
+                resultat = m.installer_extension("std")
+            self.assertEqual(resultat["statut"], "EXTENSION_INSTALLEE")
+            self.assertEqual(resultat["extension"], "std")
+            self.assertEqual(resultat["module_racine"], "Std")
+            self.assertEqual(faux.motifs_recus[-1], MOTIFS_EXTENSION_STD,
+                             "l'extraction doit recevoir MOTIFS_EXTENSION_STD")
+            self.assertIn((m.rep_install, "Std"),
+                          faux.validations_extension,
+                          "valider_extension doit recevoir (rep, 'Std')")
+            self.assertTrue(m.extension_installee("std"))
+            self.assertTrue(
+                os.path.isfile(
+                    os.path.join(m.rep_install, ".valide-ext-std")),
+                "le marqueur .valide-ext-std doit exister")
+
+    def test_idempotent(self):
+        """2e installer_extension → DEJA_INSTALLEE sans ré-extraction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesExt()
+            self._installer_base(m, faux)
+            p1, p2, p3, p4 = _patch_phases_ext(faux)
+            with p1, p2, p3, p4:
+                premier = m.installer_extension("lean")
+                self.assertEqual(premier["statut"], "EXTENSION_INSTALLEE")
+                extractions_apres_premier = faux.extractions
+                second = m.installer_extension("lean")
+                self.assertEqual(second["statut"], "DEJA_INSTALLEE")
+            self.assertEqual(faux.extractions, extractions_apres_premier,
+                             "le 2e appel ne doit pas ré-extraire")
+
+    def test_installe_la_base_si_absente(self):
+        """Base absente → installer() d'abord (téléchargement), puis ext."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesExt()
+            p1, p2, p3, p4 = _patch_phases_ext(faux)
+            with p1, p2, p3, p4:
+                # pas d'archive en cache : le faux téléchargeur l'écrit
+                resultat = m.installer_extension("std")
+            self.assertEqual(resultat["statut"], "EXTENSION_INSTALLEE")
+            self.assertTrue(m.est_installee())
+            self.assertTrue(m.extension_installee("std"))
+            self.assertGreaterEqual(len(faux.urls_telechargees), 1,
+                                    "la base aurait dû être téléchargée")
+
+    def test_retelecharge_archive_manquante(self):
+        """Archive effacée du cache → re-téléchargée avant extraction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesExt()
+            self._installer_base(m, faux)
+            os.unlink(m.chemin_archive)
+            telechargements_avant = len(faux.urls_telechargees)
+            p1, p2, p3, p4 = _patch_phases_ext(faux)
+            with p1, p2, p3, p4:
+                # le faux téléchargeur réécrit l'archive factice
+                def telecharger_reecrit(url, dest, sha256_attendu,
+                                        progression=None, _ouvreur=None):
+                    faux.urls_telechargees.append(url)
+                    with open(dest, "wb") as f:
+                        f.write(b"archive-factice")
+                    return {"chemin": dest, "octets": 15,
+                            "sha256": sha256_attendu}
+                with patch("phi_complexity.toolchain.manager.telecharger",
+                           side_effect=telecharger_reecrit):
+                    resultat = m.installer_extension("std")
+            self.assertEqual(resultat["statut"], "EXTENSION_INSTALLEE")
+            self.assertGreater(len(faux.urls_telechargees),
+                               telechargements_avant,
+                               "l'archive manquante doit être re-téléchargée")
+
+    def test_marqueur_extension_corrompu(self):
+        """Marqueur avec mauvais sha256 → extension_installee() False."""
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._gestionnaire(tmp)
+            faux = _FauxPhasesExt()
+            p1, p2, p3, p4 = _patch_phases_ext(faux)
+            with p1, p2, p3, p4:
+                m.installer_extension("std")
+            self.assertTrue(m.extension_installee("std"))
+            with open(m._chemin_marqueur_extension("std"),
+                      "w", encoding="utf-8") as f:
+                json.dump({"version": "4.34.0", "sha256": "00" * 32,
+                           "extension": "std"}, f)
+            self.assertFalse(m.extension_installee("std"))
+
+    def test_manifeste_extensions_synchronises(self):
+        """Garde : le manifeste réel == constantes extract.py (motifs)."""
+        with open(MANIFESTE_DEFAUT, "r", encoding="utf-8") as f:
+            manifeste = json.load(f)
+        extensions = manifeste.get("extensions", {})
+        self.assertEqual(set(extensions.keys()), set(EXTENSIONS_MOTIFS),
+                         "le manifeste et EXTENSIONS_MOTIFS doivent "
+                         "déclarer les mêmes extensions")
+        self.assertEqual(extensions["std"]["motifs"], MOTIFS_EXTENSION_STD)
+        self.assertEqual(extensions["lean"]["motifs"], MOTIFS_EXTENSION_LEAN)
+        self.assertEqual(extensions["std"]["module_racine"], "Std")
+        self.assertEqual(extensions["lean"]["module_racine"], "Lean")
+        # tailles mesurées présentes et plausibles (> 0)
+        self.assertGreater(
+            extensions["std"]["taille_octets_mesuree"], 0)
+        self.assertGreater(
+            extensions["lean"]["taille_octets_mesuree"],
+            extensions["std"]["taille_octets_mesuree"])
 
 
 if __name__ == "__main__":

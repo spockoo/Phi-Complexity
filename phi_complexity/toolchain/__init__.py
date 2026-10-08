@@ -15,6 +15,7 @@ Statuts typés : ce module lève des exceptions typées, jamais de booléen nu.
 
 from .manager import (
     CHEMIN_DEFAUT_CACHE,
+    EXTENSIONS_MOTIFS,
     MANIFESTE_DEFAUT,
     ErreurExtraction,
     ErreurTelechargement,
@@ -23,6 +24,8 @@ from .manager import (
     ToolchainAbsente,
     ToolchainManager,
 )
+from .extract import MOTIFS_EXTENSION_LEAN, MOTIFS_EXTENSION_STD
+from .validate import valider_extension
 from .mathlib import (
     CacheExpire,
     ErreurMathlib,
@@ -52,7 +55,10 @@ from .version import (
 
 __all__ = [
     "CHEMIN_DEFAUT_CACHE",
+    "EXTENSIONS_MOTIFS",
     "MANIFESTE_DEFAUT",
+    "MOTIFS_EXTENSION_LEAN",
+    "MOTIFS_EXTENSION_STD",
     "CacheExpire",
     "ErreurExtraction",
     "ErreurMathlib",
@@ -79,6 +85,7 @@ __all__ = [
     "trouver_lean_toolchain",
     "url_base_cache",
     "url_marqueur",
+    "valider_extension",
     "verifier_feu_vert",
     "version_installee",
 ]
