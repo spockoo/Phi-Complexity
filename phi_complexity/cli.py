@@ -2410,6 +2410,108 @@ def _executer_lean(args: argparse.Namespace) -> int:
 
 
 # ────────────────────────────────────────────────────────
+# EXÉCUTEURS MANQUANTS (réparation 2026-10-08 — câblage CLI)
+# Ces 4 commandes étaient déclarées au parseur mais sans exécuteur
+# (NameError à l'invocation). Réparé : câblage minimal vers les modules.
+# ────────────────────────────────────────────────────────
+
+def _executer_radar(args: argparse.Namespace) -> int:
+    """Exécute 'radar' : compare deux états structurels (faits uniquement).
+
+    Lecture seule. Les observations sont descriptives (garde
+    non-prescriptive) ; le tri reste humain.
+    """
+    from . import radar
+    import json
+    try:
+        avant = radar.scanner(args.avant)
+        apres = radar.scanner(args.apres)
+    except Exception as e:
+        print(f"❌ Erreur lors du scan : {e}")
+        return 1
+    kwargs = {}
+    if getattr(args, "inclure_hors_chaine", False):
+        kwargs["exclure_doublons"] = ()
+    observations = radar.comparer(avant, apres, **kwargs)
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(radar.vers_dict(observations),
+                         ensure_ascii=False, indent=2))
+    else:
+        print(radar.formater_console(observations))
+    return 0
+
+
+def _executer_sismique(args: argparse.Namespace) -> int:
+    """Exécute 'sismique' : mémoire des rythmes via l'historique git.
+
+    Lecture seule. Décrit (magnitude, profondeur, épicentre), ne juge pas.
+    """
+    from . import sismique
+    import json
+    try:
+        resultat = sismique.analyser(args.depot, args.depuis)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    except Exception as e:
+        print(f"❌ Erreur lors de l'analyse sismique : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(resultat, ensure_ascii=False, indent=2))
+    else:
+        print(sismique.formater_console(resultat))
+    return 0
+
+
+def _executer_consigner(args: argparse.Namespace) -> int:
+    """Exécute 'consigner' : consigne une décision humaine de veto.
+
+    L'instrument consigne (observation → décision + motif + date) ;
+    il ne prédit ni ne recommande aucun veto.
+    """
+    from . import registre_observations
+    observation = {
+        "kind": args.kind,
+        "fichier": args.fichier,
+        "ligne": args.ligne,
+        "nom": args.nom,
+    }
+    veto = args.veto == "oui"
+    try:
+        registre_observations.consigner(
+            observation, veto, args.motif, chemin=args.registre)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    print(f"✅ Consigné : veto={'oui' if veto else 'non'} sur {args.nom} "
+          f"({args.fichier}:{args.ligne})")
+    return 0
+
+
+def _executer_registre(args: argparse.Namespace) -> int:
+    """Exécute 'registre' : liste les décisions de veto consignées.
+
+    Lecture seule.
+    """
+    from . import registre_observations
+    try:
+        entrees = registre_observations.lister(chemin=args.registre)
+    except Exception as e:
+        print(f"❌ Erreur lors de la lecture du registre : {e}")
+        return 1
+    if not entrees:
+        print("(registre vide)")
+        return 0
+    for e in entrees:
+        obs = e.get("observation", {})
+        print(f"{e.get('date', '?')}  veto={'oui' if e.get('veto') else 'non'}  "
+              f"{obs.get('kind', '?')} {obs.get('fichier', '?')}:"
+              f"{obs.get('ligne', '?')} {obs.get('nom', '?')}")
+        print(f"    motif : {e.get('motif', '')}")
+    return 0
+
+
+# ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
 
