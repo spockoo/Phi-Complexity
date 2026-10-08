@@ -151,6 +151,10 @@ Exemples :
                         help="Dossiers supplémentaires à exclure, séparés par des virgules")
     veille.add_argument("--no-exclude", action="store_true",
                         help="Désactive les exclusions par défaut")
+    veille.add_argument("--sans-lilith", action="store_true",
+                        help="Désactive la section Lilith native "
+                             "(métriques var_relative/n_eff par fichier Python, "
+                             "affichées par défaut)")
 
     oracle = subparsers.add_parser("oracle",
                                    help="Traces d'oracle : la chaîne de raisonnement "
@@ -772,6 +776,118 @@ def _executer_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+# ────────────────────────────────────────────────────────
+# LILITH NATIVE DANS LA VEILLE (PHI-NATIF-A, 2026-10-08)
+# ────────────────────────────────────────────────────────
+# La veille mesure désormais, pour chaque fichier Python audité, la
+# variance relative Lilith var_relative = χ²(P‖Q₀) = n·‖P−Q₀‖²₂ calculée
+# sur le profil κ (complexités AST des fonctions du fichier).
+# var_relative > 2,95 ⇒ concentration suspecte : une F1 (violation de
+# décomposition) est possible dans ce fichier — l'alerte est EXHIBÉE,
+# elle ne fait jamais basculer le verdict de la veille (instrument qui
+# montre, jamais juge automatisé).
+# n_eff = n / (1 + var_relative) : taille d'échantillon effective,
+# dégradée par la concentration (n fonctions, n_eff fonctions
+# « vraiment indépendantes »).
+
+SEUIL_LILITH_VAR_RELATIVE = 2.95
+
+
+def _dossier_exclu_lilith(nom: str, exclusions) -> bool:
+    """Même convention que l'indexeur : nom exact ou .egg-info."""
+    if not exclusions:
+        return False
+    return nom in exclusions or nom.endswith(".egg-info")
+
+
+def _fichiers_python_audites(dossier: str, exclusions) -> list:
+    """Chemins relatifs des .py audités par la veille.
+
+    Respecte les exclusions effectives (--exclude/--no-exclude) et ignore
+    les répertoires cachés : la section Lilith audite exactement les
+    fichiers que la veille surveille, ni plus ni moins.
+    """
+    trouves = []
+    for racine, dirs, noms in os.walk(dossier):
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".")
+                   and not _dossier_exclu_lilith(d, exclusions)]
+        for nom in sorted(noms):
+            if nom.endswith(".py"):
+                trouves.append(os.path.relpath(
+                    os.path.join(racine, nom), dossier))
+    return trouves
+
+
+def _section_lilith_veille(dossier: str, exclusions) -> dict:
+    """Section Lilith du diff de veille : métriques par fichier Python.
+
+    Pour chaque fichier : n (fonctions détectées), var_relative (χ² au
+    profil uniforme), n_eff = n / (1 + var_relative). Les fichiers non
+    parsables ou sans fonction sont exhibés comme tels, jamais
+    silencieusement ignorés. var_relative > 2,95 ⇒ alerte « F1
+    suspectée ».
+    """
+    from .lilith import var_relative, kappas_depuis_fichier
+    fichiers = {}
+    alertes = []
+    for rel in _fichiers_python_audites(dossier, exclusions):
+        try:
+            kappas = kappas_depuis_fichier(os.path.join(dossier, rel))
+        except Exception:
+            kappas = None
+        if not kappas:
+            fichiers[rel] = {"n": 0,
+                             "note": "non parsable ou sans fonction détectée"}
+            continue
+        n = len(kappas)
+        vr = var_relative(kappas)
+        n_eff = n / (1.0 + vr)
+        fichiers[rel] = {
+            "n": n,
+            "var_relative": round(vr, 4),
+            "n_eff": round(n_eff, 2),
+        }
+        if vr > SEUIL_LILITH_VAR_RELATIVE:
+            alertes.append(
+                f"⚠ LILITH: {rel} — var_relative={vr:.2f} > "
+                f"{SEUIL_LILITH_VAR_RELATIVE:.2f} (F1 suspectée)")
+    return {
+        "active": True,
+        "seuil_var_relative": SEUIL_LILITH_VAR_RELATIVE,
+        "nb_fichiers": len(fichiers),
+        "nb_alertes": len(alertes),
+        "fichiers": fichiers,
+        "alertes": alertes,
+    }
+
+
+def _rendre_lilith_console(section: dict) -> str:
+    """Rend la section Lilith lisible dans un terminal."""
+    lignes = ["", "── LILITH (native) ──"]
+    if not section.get("active"):
+        lignes.append(f"  section Lilith désactivée : "
+                      f"{section.get('note', '--sans-lilith')}")
+        return "\n".join(lignes)
+    lignes.append(
+        f"  {section['nb_fichiers']} fichier(s) Python audité(s), "
+        f"{section['nb_alertes']} alerte(s) "
+        f"(seuil var_relative > {section['seuil_var_relative']:.2f})")
+    for alerte in section["alertes"]:
+        lignes.append(f"  {alerte}")
+    # Top concentration (informatif) : les 5 var_relative les plus élevés.
+    top = sorted(
+        ((rel, m) for rel, m in section["fichiers"].items()
+         if "var_relative" in m),
+        key=lambda it: -it[1]["var_relative"])[:5]
+    if top:
+        lignes.append("  concentration max (var_relative / n_eff) :")
+        for rel, m in top:
+            lignes.append(
+                f"    • {rel} : {m['var_relative']:.2f} / {m['n_eff']:.2f}")
+    return "\n".join(lignes)
+
+
 def _executer_veille(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'veille' : diff contre la référence."""
     import json
@@ -791,10 +907,27 @@ def _executer_veille(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"❌ Erreur lors de la veille : {e}")
         return 1
+    # PHI-NATIF-A (2026-10-08) : Lilith native — métriques de concentration
+    # (var_relative, n_eff) par fichier Python, exhibées par défaut,
+    # désactivables par --sans-lilith. La section est informative : elle ne
+    # fait jamais échouer la veille ni basculer son verdict.
+    if getattr(args, "sans_lilith", False):
+        diff["lilith"] = {
+            "active": False,
+            "note": "section Lilith désactivée (--sans-lilith)",
+        }
+    else:
+        try:
+            diff["lilith"] = _section_lilith_veille(
+                dossier, _exclusions_depuis_args(args))
+        except Exception as e:
+            diff["lilith"] = {"active": False,
+                              "note": f"section Lilith indisponible : {e}"}
     if getattr(args, "format", "console") == "json":
         print(json.dumps(diff, ensure_ascii=False, indent=2))
     else:
         print(veille_console(diff))
+        print(_rendre_lilith_console(diff["lilith"]))
     # Durcissement 2026-10-01 : un instrument dégradé échoue bruyamment
     # (exit 3, distinct de 2 = dégradation détectée). Jamais de ✅ STABLE
     # sur un arrière-plan perdu.
