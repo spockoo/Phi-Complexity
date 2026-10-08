@@ -29,7 +29,21 @@ import io
 import os
 import tarfile
 
-import zstandard
+
+def _zstandard():
+    """Import paresseux de zstandard (dépendance optionnelle).
+
+    Le cœur d'audit phi-complexity reste à zéro dépendance ;
+    zstandard n'est requis que pour l'extraction d'archives .tar.zst.
+    """
+    try:
+        import zstandard
+    except ImportError:
+        raise ErreurExtraction(
+            "le module 'zstandard' est requis pour extraire les archives "
+            ".tar.zst — installez-le avec : pip install zstandard"
+        )
+    return zstandard
 
 
 class ErreurExtraction(Exception):
@@ -310,7 +324,7 @@ def extraire_fichiers(archive_tar_zst, dest_dir, fichiers, progression=None):
     n_octets = 0
     try:
         with open(archive_tar_zst, "rb") as fzst:
-            dctx = zstandard.ZstdDecompressor()
+            dctx = _zstandard().ZstdDecompressor()
             flux = dctx.stream_reader(fzst)
             with tarfile.open(fileobj=flux, mode="r|") as tar:
                 for membre in tar:
@@ -402,7 +416,7 @@ def extraire_minimal(archive_tar_zst, dest_dir, motifs=None, progression=None):
     n_octets = 0
     try:
         with open(archive_tar_zst, "rb") as fzst:
-            dctx = zstandard.ZstdDecompressor()
+            dctx = _zstandard().ZstdDecompressor()
             flux = dctx.stream_reader(fzst)
             with tarfile.open(fileobj=flux, mode="r|") as tar:
                 for membre in tar:
