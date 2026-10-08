@@ -23,12 +23,31 @@ Modes :
 import hashlib
 import lzma
 import os
+import resource
 import struct
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
+
+# ---------------------------------------------------------------------------
+# Limites mémoire (streaming) — directive Tomy 2026-10-08 :
+# le compresseur ne doit jamais charger tout en RAM (cause suspectée des reboots).
+# ---------------------------------------------------------------------------
+# Seuil RSS au-delà duquel on réduit la taille des lots (Mo)
+RSS_SOFT_LIMIT_MB = 800
+# Taille cible d'un lot de lecture (octets de données brutes)
+BATCH_TARGET_BYTES = 200 * 1024 * 1024
+# Bornes sur le nombre de fichiers par lot
+BATCH_MAX_FILES = 2000
+BATCH_MIN_FILES = 100
+
+
+def _rss_mb() -> float:
+    """Mémoire résidente actuelle du processus, en Mo."""
+    # ru_maxrss est en kilo-octets sur Linux
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 # ---------------------------------------------------------------------------
 # Format .phiz v1
@@ -113,6 +132,62 @@ class PhizWriter:
         if self.progress_cb:
             self.progress_cb(done, total, name)
 
+    def _adapt_batch(self, batch_files: int, batch_bytes: int) -> tuple[int, int]:
+        """Réduit la taille des lots si la RAM approche la limite.
+
+        Retourne (max_files, max_bytes) ajustés.
+        """
+        rss = _rss_mb()
+        if rss > RSS_SOFT_LIMIT_MB:
+            # Diviser par deux, avec planchers
+            batch_files = max(BATCH_MIN_FILES, batch_files // 2)
+            batch_bytes = max(50 * 1024 * 1024, batch_bytes // 2)
+        return batch_files, batch_bytes
+
+    def _batches(self, files: list[Path]) -> Iterator[list[Path]]:
+        """Découpe la liste triée de fichiers en lots bornés en mémoire.
+
+        La taille des lots s'adapte si la RAM approche la limite.
+        """
+        max_files = BATCH_MAX_FILES
+        max_bytes = BATCH_TARGET_BYTES
+        i = 0
+        n = len(files)
+        while i < n:
+            max_files, max_bytes = self._adapt_batch(max_files, max_bytes)
+            # Estimer la taille du lot sans lire les fichiers :
+            # on accumule les tailles via stat() (pas cher, pas de données en RAM)
+            batch = []
+            batch_bytes = 0
+            while i < n and len(batch) < max_files and batch_bytes < max_bytes:
+                f = files[i]
+                try:
+                    sz = f.stat().st_size
+                except OSError:
+                    sz = 0
+                # Un fichier seul plus gros que le lot → lot d'un seul fichier
+                if batch and batch_bytes + sz > max_bytes:
+                    break
+                batch.append(f)
+                batch_bytes += sz
+                i += 1
+            # Garde-fou : toujours progresser
+            if not batch:
+                batch.append(files[i])
+                i += 1
+            yield batch
+
+    def _read_batch(self, batch: list[Path], source: Path) -> list[tuple[str, bytes, bytes]]:
+        """Lit un lot de fichiers en parallèle. Retourne [(rel, data, sha)]."""
+        results: dict[int, tuple[str, bytes, bytes]] = {}
+        with ThreadPoolExecutor(max_workers=self.jobs) as ex:
+            futs = {ex.submit(self._read_one, f, source): idx
+                    for idx, f in enumerate(batch)}
+            for fut in as_completed(futs):
+                results[futs[fut]] = fut.result()
+        # Remettre dans l'ordre du lot (qui est trié globalement)
+        return [results[idx] for idx in range(len(batch))]
+
     # -- entrée principale --------------------------------------------------
     def write(self, source: Path) -> dict:
         source = Path(source)
@@ -125,53 +200,70 @@ class PhizWriter:
 
     # -- mode per-file ------------------------------------------------------
     def _write_per_file(self, source: Path, files: list[Path]) -> dict:
+        """Streaming : lit/compresse/écrit par lots, ne garde que l'index en RAM."""
         total = len(files)
-        results: list[tuple[str, bytes, bytes, bytes]] = []  # rel, data, sha, compressed
-
-        def _work(fpath: Path):
-            rel, data, sha = self._read_one(fpath, source)
-            return rel, data, sha, _compress(data, self.preset)
-
-        done = 0
-        with ThreadPoolExecutor(max_workers=self.jobs) as ex:
-            futs = {ex.submit(_work, f): f for f in files}
-            for fut in as_completed(futs):
-                results.append(fut.result())
-                done += 1
-                self._report(done, total, results[-1][0])
-
-        results.sort(key=lambda x: x[0])
+        # Index : (rel, orig_size, comp_size, data_offset, sha) — ~100 o/fichier
+        index_rows: list[tuple[str, int, int, int, bytes]] = []
 
         original_total = 0
         compressed_total = 0
+        done = 0
+
         with open(self.output, "wb") as out:
             out.write(b"\x00" * HEADER_SIZE)
             data_offset = 0
-            index_buf = bytearray()
-            for rel, data, sha, comp in results:
-                entry_offset = data_offset
-                out.write(struct.pack("<Q", len(comp)))
-                out.write(comp)
-                data_offset += 8 + len(comp)
-                original_total += len(data)
-                compressed_total += len(comp)
 
+            for batch in self._batches(files):
+                # Lecture parallèle du lot
+                batch_data = self._read_batch(batch, source)
+
+                # Compression parallèle du lot
+                def _comp(item):
+                    rel, data, sha = item
+                    return rel, data, sha, _compress(data, self.preset)
+
+                comp_results: dict[int, tuple] = {}
+                with ThreadPoolExecutor(max_workers=self.jobs) as ex:
+                    futs = {ex.submit(_comp, item): idx
+                            for idx, item in enumerate(batch_data)}
+                    for fut in as_completed(futs):
+                        comp_results[futs[fut]] = fut.result()
+                ordered = [comp_results[idx] for idx in range(len(batch_data))]
+                # Libérer les données brutes du lot dès que possible
+                del batch_data, comp_results
+
+                # Écriture immédiate (dans l'ordre trié du lot)
+                for rel, data, sha, comp in ordered:
+                    entry_offset = data_offset
+                    out.write(struct.pack("<Q", len(comp)))
+                    out.write(comp)
+                    data_offset += 8 + len(comp)
+                    original_total += len(data)
+                    compressed_total += len(comp)
+                    index_rows.append((rel, len(data), len(comp), entry_offset, sha))
+                    done += 1
+                    self._report(done, total, rel)
+                del ordered
+
+            # Index final (déjà trié car les lots suivent l'ordre global trié)
+            index_offset = out.tell()
+            index_buf = bytearray()
+            for rel, osize, csize, doff, sha in index_rows:
                 pb = rel.encode("utf-8")
                 index_buf.extend(struct.pack(
-                    INDEX_ENTRY_FMT, len(pb), len(data), len(comp),
-                    entry_offset, sha))
+                    INDEX_ENTRY_FMT, len(pb), osize, csize, doff, sha))
                 index_buf.extend(pb)
-
-            index_offset = out.tell()
             out.write(index_buf)
             index_size = len(index_buf)
+            del index_rows, index_buf
+
             out.seek(0)
             out.write(struct.pack(HEADER_FMT, PHIZ_MAGIC, PHIZ_VERSION, 0,
-                                  len(results), index_offset, index_size,
+                                  total, index_offset, index_size,
                                   b"\x00" * 32))
 
         return {
-            "files": len(results),
+            "files": total,
             "original_bytes": original_total,
             "compressed_bytes": compressed_total + HEADER_SIZE + index_size,
             "ratio_pct": compressed_total / original_total * 100 if original_total else 0,
@@ -180,41 +272,30 @@ class PhizWriter:
 
     # -- mode solide ---------------------------------------------------------
     def _write_solid(self, source: Path, files: list[Path]) -> dict:
+        """Streaming : lots de lecture -> blocs écrits au fur et à mesure.
+
+        Mémoire bornée par : un lot (~200 Mo max) + un bloc (~10 Mo) + l'index.
+        Ne charge JAMAIS l'intégralité des données en RAM.
+        """
         total = len(files)
 
-        # 1. Lecture parallèle
-        file_data: list[tuple[str, bytes, bytes]] = []
-        done = 0
-        with ThreadPoolExecutor(max_workers=self.jobs) as ex:
-            futs = {ex.submit(self._read_one, f, source): f for f in files}
-            for fut in as_completed(futs):
-                file_data.append(fut.result())
-                done += 1
-                self._report(done, total * 2, "lecture")
-        file_data.sort(key=lambda x: x[0])
+        # Index solide : (rel, size, sha, block_idx, offset_in_block) — petit
+        all_entries: list[tuple[str, int, bytes, int, int]] = []
 
-        # 2. Découpage en blocs
-        blocks: list[list[tuple[str, bytes, bytes]]] = []
+        original_total = 0
+        compressed_total = 0
+        nblocks = 0
+        done = 0
+
+        # Bloc courant (reporté entre les lots)
         cur: list[tuple[str, bytes, bytes]] = []
         cur_size = 0
-        for rel, data, sha in file_data:
-            if cur and cur_size + len(data) > self.solid_block_size:
-                blocks.append(cur)
-                cur, cur_size = [], 0
-            # Un fichier seul plus gros que le bloc → son propre bloc
-            if not cur and len(data) > self.solid_block_size:
-                blocks.append([(rel, data, sha)])
-                continue
-            cur.append((rel, data, sha))
-            cur_size += len(data)
-        if cur:
-            blocks.append(cur)
 
-        # 3. Compression des blocs (parallèle)
-        # Chaque bloc : concaténation framée [path_len:2][path][orig:8][sha:32][len:8][data]
-        def _compress_block(bfiles):
+        def _build_and_write_block(bfiles: list[tuple[str, bytes, bytes]],
+                                   out, bidx: int) -> int:
+            """Construit le buffer framé, compresse, écrit. Retourne la taille
+            compressée écrite (incluant le préfixe <Q). Remplit all_entries."""
             buf = bytearray()
-            # offsets intra-bloc (dans le buffer décompressé)
             offsets = []
             for rel, data, sha in bfiles:
                 pb = rel.encode("utf-8")
@@ -224,46 +305,57 @@ class PhizWriter:
                 buf.extend(struct.pack("<Q32sQ", len(data), sha, len(data)))
                 buf.extend(data)
             comp = _compress(bytes(buf), self.preset)
-            orig = len(buf)
-            # entrées : (rel, orig_size, sha, offset_in_block)
-            entries = [(rel, len(data), sha, off)
-                       for (rel, data, sha), off in zip(bfiles, offsets)]
-            return comp, entries, orig
+            del buf  # libérer le buffer non compressé au plus tôt
+            out.write(struct.pack("<Q", len(comp)))
+            out.write(comp)
+            for (rel, data, sha), off in zip(bfiles, offsets):
+                all_entries.append((rel, len(data), sha, bidx, off))
+            return 8 + len(comp)
 
-        block_out: list[tuple[bytes, list, int]] = []
-        done = 0
-        with ThreadPoolExecutor(max_workers=self.jobs) as ex:
-            futs = [ex.submit(_compress_block, b) for b in blocks]
-            # Garder l'ordre des blocs : on récupère dans l'ordre de soumission
-            # via un mapping
-            fut_list = list(futs)
-            for i, fut in enumerate(fut_list):
-                block_out.append(fut.result())
-                done += 1
-                self._report(total + done, total + len(blocks),
-                             f"bloc {done}/{len(blocks)}")
-
-        # 4. Écriture
-        original_total = 0
-        compressed_total = 0
-        all_entries: list[tuple[str, int, bytes, int, int]] = []  # rel, size, sha, bidx, off
         with open(self.output, "wb") as out:
             out.write(b"\x00" * HEADER_SIZE)
-            data_offset = 0
-            for bidx, (comp, entries, orig) in enumerate(block_out):
-                out.write(struct.pack("<Q", len(comp)))
-                out.write(comp)
-                for rel, fsize, sha, off in entries:
-                    all_entries.append((rel, fsize, sha, bidx, off))
-                # data_offset du bloc (pour référence)
-                data_offset += 8 + len(comp)
-                compressed_total += len(comp)
-                original_total += orig  # inclut le framing (négligeable)
 
-            # Correction : original_total doit être la somme des fichiers, pas du framing
-            original_total = sum(e[1] for e in all_entries)
+            for batch in self._batches(files):
+                batch_data = self._read_batch(batch, source)
 
-            all_entries.sort(key=lambda x: x[0])
+                for rel, data, sha in batch_data:
+                    # Même logique de découpage que l'original
+                    if cur and cur_size + len(data) > self.solid_block_size:
+                        written = _build_and_write_block(cur, out, nblocks)
+                        compressed_total += written - 8  # sans le préfixe <Q>
+                        nblocks += 1
+                        done_blk = nblocks
+                        self._report(done + len(cur), total,
+                                     f"bloc {done_blk}")
+                        cur, cur_size = [], 0
+                    # Un fichier seul plus gros que le bloc → son propre bloc
+                    if not cur and len(data) > self.solid_block_size:
+                        written = _build_and_write_block([(rel, data, sha)],
+                                                         out, nblocks)
+                        compressed_total += written - 8
+                        nblocks += 1
+                        done += 1
+                        original_total += len(data)
+                        self._report(done, total, f"bloc {nblocks} (gros fichier)")
+                        continue
+                    cur.append((rel, data, sha))
+                    cur_size += len(data)
+                    original_total += len(data)
+                    done += 1
+
+                # Libérer le lot lu (les données restantes vivent dans `cur`)
+                del batch_data
+                # Progression sur les fichiers traités
+                self._report(done, total, f"traitement {done}/{total}")
+
+            # Vider le dernier bloc
+            if cur:
+                written = _build_and_write_block(cur, out, nblocks)
+                compressed_total += written - 8
+                nblocks += 1
+                cur = []
+
+            # Index final — déjà trié car traitement dans l'ordre global trié
             index_offset = out.tell()
             index_buf = bytearray()
             for rel, fsize, sha, bidx, off in all_entries:
@@ -273,19 +365,20 @@ class PhizWriter:
                 index_buf.extend(struct.pack("<Q32sIQ", fsize, sha, bidx, off))
             out.write(index_buf)
             index_size = len(index_buf)
+            del all_entries, index_buf
 
             out.seek(0)
             out.write(struct.pack(HEADER_FMT, PHIZ_MAGIC, PHIZ_VERSION,
-                                  FLAG_SOLID, len(all_entries),
+                                  FLAG_SOLID, total,
                                   index_offset, index_size, b"\x00" * 32))
 
         return {
-            "files": len(all_entries),
+            "files": total,
             "original_bytes": original_total,
             "compressed_bytes": compressed_total + HEADER_SIZE + index_size,
             "ratio_pct": compressed_total / original_total * 100 if original_total else 0,
             "mode": "solid",
-            "blocks": len(block_out),
+            "blocks": nblocks,
         }
 
 
