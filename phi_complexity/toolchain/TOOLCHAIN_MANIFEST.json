@@ -1,1 +1,31 @@
-{"cible_extraction":"522 Mo, 1956 fichiers (mesuré le 2026-10-08)","fichiers_minimaux":["bin/lean","lib/lean/libInit_shared.so","lib/lean/libleanshared.so","lib/lean/libleanshared_1.so","lib/lean/libleanshared_2.so","lib/lean/Init/*.olean","lib/lean/Init/*.olean.private","lib/lean/Init/*.olean.server","lib/lean/Init/**/*.olean","lib/lean/Init/**/*.olean.private","lib/lean/Init/**/*.olean.server"],"note_miroir":"si définie, remplace le préfixe https://github.com/leanprover/lean4/releases/download/v4.34.0 ; accepte aussi file://","note_taille":"mesuré 580,4 Mo le 2026-10-08 ; valeur indicative, seul le SHA256 fait foi","plateforme":"x86_64-unknown-linux-gnu","sha256":"caaa98356098c85dc0fcbbd28e1ec66f39eb6551829972b752ff20e1286b646b","taille_octets_approx":608583270,"url":"https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-linux.tar.zst","variable_miroir":"PHI_LEAN_RELEASE_BASE","variables_env":{"PHI_LEAN_RELEASE_BASE":"miroir configurable (défaut : GitHub)","PHI_TOOLCHAIN_CACHE":"répertoire de cache (défaut : ~/.cache/phi-complexity/toolchains)"},"version":"4.34.0"}
+{
+  "cible_extraction": "522 Mo, 1956 fichiers (mesuré le 2026-10-08)",
+  "fichiers_minimaux": [
+    "bin/lean",
+    "lib/lean/libInit_shared.so",
+    "lib/lean/libleanshared.so",
+    "lib/lean/libleanshared_1.so",
+    "lib/lean/libleanshared_2.so",
+    "lib/lean/Init/*.olean",
+    "lib/lean/Init/*.olean.private",
+    "lib/lean/Init/*.olean.server",
+    "lib/lean/Init/**/*.olean",
+    "lib/lean/Init/**/*.olean.private",
+    "lib/lean/Init/**/*.olean.server",
+    "lib/lean/Init.olean",
+    "lib/lean/Init.olean.private",
+    "lib/lean/Init.olean.server"
+  ],
+  "note_miroir": "si définie, remplace le préfixe https://github.com/leanprover/lean4/releases/download/v4.34.0 ; accepte aussi file://",
+  "note_taille": "mesuré 580,4 Mo le 2026-10-08 ; valeur indicative, seul le SHA256 fait foi",
+  "plateforme": "x86_64-unknown-linux-gnu",
+  "sha256": "caaa98356098c85dc0fcbbd28e1ec66f39eb6551829972b752ff20e1286b646b",
+  "taille_octets_approx": 608583270,
+  "url": "https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-linux.tar.zst",
+  "variable_miroir": "PHI_LEAN_RELEASE_BASE",
+  "variables_env": {
+    "PHI_LEAN_RELEASE_BASE": "miroir configurable (défaut : GitHub)",
+    "PHI_TOOLCHAIN_CACHE": "répertoire de cache (défaut : ~/.cache/phi-complexity/toolchains)"
+  },
+  "version": "4.34.0"
+}
