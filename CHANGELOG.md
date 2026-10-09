@@ -37,7 +37,7 @@
 ## [0.17.0] — 2026-10-06 — Double licence
 
 - **Double licence** : GPL v3 (usage libre et open source) OU Licence
-  Commerciale (usage dans logiciel propriétaire, à partir de 200 $/an).
+  Commerciale (usage dans logiciel propriétaire, 29 $ CAD/mois ou 290 $ CAD/an).
   Voir `LICENSE`, `LICENSE-COMMERCIAL.md`.
 - Nouveau `CONTRIBUTING.md` : les contributeurs acceptent la double licence.
 - *Les versions 0.16.1 et antérieures restent sous licence MIT.*

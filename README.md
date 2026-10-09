@@ -234,7 +234,10 @@ Vous pouvez choisir l'une des deux licences suivantes :
    Voir [LICENSE](LICENSE) pour le texte complet.
 2. **Licence Commerciale** — pour usage dans un logiciel propriétaire sans
    obligation de publier le code source. Voir [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)
-   pour les tarifs (à partir de 200 $/an) et conditions. Contact : tiloup777@outlook.fr
+   pour les tarifs (29 $ CAD/mois ou 290 $ CAD/an) et conditions. Contact : tiloup777@outlook.fr
+
+   **Souscrire :** [Mensuel — 29 $ CAD/mois](https://buy.stripe.com/3cI14nff8fSK7Ni8Vn3oA01) ·
+   [Annuel — 290 $ CAD/an](https://buy.stripe.com/14A28r8QK0XQ9Vq5Jb3oA00)
 
 *Les versions 0.16.1 et antérieures restent sous licence MIT.*
 *La double licence s'applique à partir de la version 0.17.0.*
