@@ -308,14 +308,15 @@ class TestCablageCLI:
             assert f"def {nom}" in src, f"{nom} manquant dans cli.py"
 
     def test_vigilance_cli_fonctionne(self, tmp_path):
-        import subprocess, sys, json
+        import subprocess, sys, json, os
         f = tmp_path / "t.lean"
         f.write_text("def P (T : Nat) : Prop := T < T\n"
                      "theorem x (h : P 5) : True := trivial\n")
+        racine = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         r = subprocess.run(
             [sys.executable, "-m", "phi_complexity", "vigilance",
              str(tmp_path), "--format", "json", "--sans-inutilisees"],
-            capture_output=True, text=True, cwd="/home/hatch/workspace/phi-pub",
+            capture_output=True, text=True, cwd=racine,
             timeout=60)
         assert r.returncode == 0, r.stderr
         data = json.loads(r.stdout)

@@ -62,7 +62,7 @@ from .mathlib import (
 from .mathlib_download import (
     DEFAUT_JOBS,
     MAX_JOBS,
-    ErreurTelechargement,
+    ErreurTelechargement as ErreurTelechargementMathlib,
     StatutTelechargement,
     meilleur_miroir,
     selection_miroir,
@@ -140,7 +140,7 @@ __all__ = [
     "url_base_cache",
     "DEFAUT_JOBS",
     "MAX_JOBS",
-    "ErreurTelechargement",
+    "ErreurTelechargementMathlib",
     "StatutTelechargement",
     "meilleur_miroir",
     "selection_miroir",

@@ -984,13 +984,13 @@ class TestVersionProjetManager(unittest.TestCase):
         return ToolchainManager(cache_dir=cache)
 
     def test_version_correspondante_passe(self):
-        """lean-toolchain sur 4.34.0 → verifier retourne la version."""
+        """lean-toolchain sur 4.34.1 → verifier retourne la version."""
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "lean-toolchain"), "w",
                       encoding="utf-8") as f:
-                f.write("leanprover/lean4:v4.34.0\n")
+                f.write("leanprover/lean4:v4.34.1\n")
             m = self._gestionnaire(tmp)
-            self.assertEqual(m.verifier_version_projet(tmp), "4.34.0")
+            self.assertEqual(m.verifier_version_projet(tmp), "4.34.1")
 
     def test_absence_fichier_retourne_none(self):
         """Sans lean-toolchain → None, pas d'exception."""
@@ -999,7 +999,7 @@ class TestVersionProjetManager(unittest.TestCase):
             self.assertIsNone(m.verifier_version_projet(tmp))
 
     def test_version_differente_leve_version_non_supportee(self):
-        """Version demandée ≠ 4.34.0 → VersionNonSupportee avec attributs."""
+        """Version demandée ≠ 4.34.1 → VersionNonSupportee avec attributs."""
         with tempfile.TemporaryDirectory() as tmp:
             chemin_tc = os.path.join(tmp, "lean-toolchain")
             with open(chemin_tc, "w", encoding="utf-8") as f:
@@ -1009,11 +1009,11 @@ class TestVersionProjetManager(unittest.TestCase):
                 m.verifier_version_projet(tmp)
             e = ctx.exception
             self.assertEqual(e.demandee, "4.33.0")
-            self.assertEqual(e.disponible, "4.34.0")
+            self.assertEqual(e.disponible, "4.34.1")
             self.assertEqual(e.chemin, chemin_tc)
             message = str(e)
             self.assertIn("4.33.0", message, "le message cite la demandée")
-            self.assertIn("4.34.0", message, "le message cite la disponible")
+            self.assertIn("4.34.1", message, "le message cite la disponible")
             self.assertIn("multi-versions", message,
                           "le message documente l'évolution future")
 
@@ -1036,7 +1036,7 @@ class TestVersionProjetManager(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "lean-toolchain"), "w",
                       encoding="utf-8") as f:
-                f.write("v4.34.0\n")
+                f.write("v4.34.1\n")
             m = self._gestionnaire(tmp)
             fichier = os.path.join(tmp, "Test.lean")
             with patch("phi_complexity.toolchain.manager.subprocess.run",
