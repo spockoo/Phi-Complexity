@@ -1,5 +1,59 @@
 # Changelog
 
+## [Non publié] — kit natif leanc (chantier 1, 2026-10-08)
+
+- `ToolchainManager.installer(avec_natif=True)` : extrait le kit natif
+  depuis l'archive officielle déjà en cache — `bin/leanc`, clang 22
+  embarqué, `ld.lld`, archives statiques (`libLean.a`, `libStd.a`,
+  `libLake.a`, ...), en-têtes C (`include/clang`, `include/lean`),
+  objets glibc. `lean --c` + `leanc` produisent un binaire natif lié
+  statiquement (hors libc système) — Hello World validé de bout en bout.
+- Kit natif : 89 membres, 575 228 874 octets mesurés (+575 Mo sur
+  l'installation). Extraction additive : `installer(avec_natif=True)`
+  sur une installation minimale existante n'ajoute que le kit
+  (pas de re-téléchargement) ; marqueur `.valide` enrichi (`natif`).
+- `extract.py` : `MOTIFS_NATIFS` + recréation des liens symboliques
+  (garde anti-traversal) ; `validate.valider_natif()`.
+- Correctif : les 3 motifs `lib/lean/Init.olean[.private|.server]`
+  manquaient dans `MOTIFS_MINIMAUX` (le manifeste les listait depuis
+  f35dd52) — sans eux, une installation fraîche ne peut pas élaborer.
+- 15 nouveaux tests unitaires (réseau mocké).
+
+## [Non publié] — extensions Lean/Std à la demande (chantier 3, 2026-10-08)
+
+- `phi lean --init --extension std` : installe la bibliothèque Std
+  (`import Std`, +290 Mo, 1 467 fichiers) depuis l'archive officielle
+  déjà en cache — aucun téléchargement supplémentaire.
+- `phi lean --init --extension lean` : installe la bibliothèque Lean
+  (`import Lean`, métaprogrammation + tactiques custom, +1,2 Go,
+  5 121 fichiers — inclut Std par fermeture d'imports).
+- Mesures exactes et preuves d'élagage dans `TOOLCHAIN_MINI_SPEC.md` §9 :
+  3 variantes olean requises, aucun sous-arbre élagable, pas de mini
+  Lean utile (`Lean.Elab.Tactic` seul = 963 Mo).
+- `ToolchainManager.installer_extension()` : idempotent (marqueur
+  `.valide-ext-<nom>`), validation par élaboration réelle.
+- 16 nouveaux tests unitaires (réseau mocké) — 56 tests OK.
+
+## [0.17.0] — 2026-10-06 — Double licence
+
+- **Double licence** : GPL v3 (usage libre et open source) OU Licence
+  Commerciale (usage dans logiciel propriétaire, à partir de 200 $/an).
+  Voir `LICENSE`, `LICENSE-COMMERCIAL.md`.
+- Nouveau `CONTRIBUTING.md` : les contributeurs acceptent la double licence.
+- *Les versions 0.16.1 et antérieures restent sous licence MIT.*
+
+## [0.16.1] — 2026-10-06 — Correctif changelog
+
+- Ajout de l'entrée changelog **v0.16.0** manquante dans le README.
+- Aucun changement de code depuis 0.16.0.
+
+## [0.16.0] — 2026-10-06 — Modules v110 + phi telemetry
+
+- Nouveaux modules v110 : `sentinelle`, `markov`, `phiwrite`, `carnet`,
+  `journal`. Nouvelles commandes : `phi markov`, `phi write`, `phi sentinelle`.
+- Nouveau `phi telemetry` : lit l'état interne de l'exporteur Lean.
+- `mission.py` : justifications pour les 6 nouveaux modules.
+
 ## [0.15.0] — 2026-10-03 — Le Témoin : radar + sismique
 
 - `phi radar --avant S1 --apres S2` : vue du mouvement structurel entre deux

@@ -37,11 +37,53 @@ Deux phases :
 - phase 2 (`analyser(complet=True)`, défaut) : tout, valeurs historiques.
 """
 import ast
+import os
 from typing import List, Optional
 
 from ..core import fibonacci_plus_proche, distance_fibonacci, PHI
 from ..modeles import MetriqueFonction, Annotation, ResultatAnalyse
+from ..cache import calculer_hash_src, obtenir_cache_courant
 from .base import AnalyseurBase
+
+
+def _parser_avec_cache(fichier: str, contenu: str) -> ast.AST:
+    """Parse `contenu` en consultant le parse cache de la session courante.
+
+    Intégration native PHI-NATIF-C : quand `phi check` a ouvert une session
+    de cache (voir phi_complexity.cache.integration_check), l'AST est
+    recherché sous la clé (chemin absolu du fichier, sha256 des octets
+    source via `calculer_hash_src`). Hit => aucun re-parse ; miss => parse
+    normal puis mise en cache.
+
+    TRANSPARENCE : le cache ne change que la vitesse d'obtention de l'AST,
+    jamais son contenu — `ast.parse` reçoit exactement les mêmes octets
+    dans les deux cas. Une SyntaxError du source remonte exactement comme
+    sans cache (elle n'est jamais mise en cache).
+
+    DÉGRADATION GRACIEUSE : toute défaillance du cache (get/put, pickle,
+    clé) retombe sur `ast.parse` normal — le cache ne fait jamais échouer
+    un audit.
+    """
+    cache = obtenir_cache_courant()
+    if cache is None:
+        return ast.parse(contenu, filename=fichier)
+    try:
+        nom = os.path.abspath(fichier)
+        hash_src = calculer_hash_src(contenu.encode("utf-8"))
+    except Exception:
+        return ast.parse(contenu, filename=fichier)
+    try:
+        arbre = cache.get(nom, hash_src)
+    except Exception:
+        arbre = None  # un get() défaillant ne doit jamais bloquer l'audit
+    if arbre is not None:
+        return arbre
+    arbre = ast.parse(contenu, filename=fichier)
+    try:
+        cache.put(nom, hash_src, arbre)
+    except Exception:
+        pass  # le cache est une optimisation, pas un prérequis
+    return arbre
 
 # Bits de classification d'un nœud. Le dispatch se fait par `type()` +
 # dictionnaire (UN lookup par nœud au lieu de ~8 isinstance) ; les bits
@@ -95,11 +137,16 @@ class AnalyseurPython(AnalyseurBase):
         """
         Charge et parse le fichier Python (gestionnaire de contexte, Règle II).
         Ne fait QUE lire + parser : aucun pré-traitement de l'arbre.
+
+        Le parsing transite par `_parser_avec_cache` : quand une session
+        `phi check` a activé le parse cache natif, l'AST est réutilisé sans
+        re-parse si les octets source sont inchangés — sortie identique,
+        juste plus rapide.
         """
         with open(self.fichier, "r", encoding="utf-8") as f:
             contenu = f.read()
         self.lignes = contenu.splitlines()
-        self.tree = ast.parse(contenu, filename=self.fichier)
+        self.tree = _parser_avec_cache(self.fichier, contenu)
         return self
 
     def analyser(self, complet: bool = True) -> ResultatAnalyse:

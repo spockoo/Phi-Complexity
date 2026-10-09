@@ -280,13 +280,14 @@ class TestInterdictionEtStabilite:
 
     def test_json_sonde_stable_hors_ajouts(self, registre):
         # Critère (a) : le JSON existant n'est modifié que par les ajouts
-        # mandatés — section `entropie`, `doubles_verdicts`, `double_statut`.
+        # mandatés — section `entropie`, `doubles_verdicts`, `double_statut`,
+        # `impact` (analyse d'impact native, chantier PHI-NATIF-B, 2026-10-08).
         d = sonder("energy_identity", registre).vers_dict()
         cles_haut = set(d)
         attendues = {"mecanisme", "type_mecanisme", "trous", "statut_mecanisme",
                      "doubles_verdicts", "entropie", "sonde_a", "sonde_b",
                      "notes", "integrite", "limites", "interdiction",
-                     "version_phi", "horodatage"}
+                     "version_phi", "horodatage", "impact"}
         assert cles_haut == attendues, f"écart : {cles_haut ^ attendues}"
         noeud = d["sonde_a"]["route_vers_inconditionnel"][0]
         cles_noeud = set(noeud)

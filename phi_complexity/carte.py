@@ -19,6 +19,7 @@ métriques (radiance/statut/oudjat par fichier = None, `metriques_calculees`
 celui de v0.7.0 (aucune clé ajoutée) : valeurs inchangées.
 """
 import os
+import sys
 from typing import Dict, List, Optional
 
 from .core import VERSION
@@ -66,11 +67,15 @@ def _symbole_vers_dict(s: Symbole) -> dict:
     }
 
 
-def _detecter_collisions(index: Dict[str, List[Symbole]]) -> List[dict]:
+def _detecter_collisions_python(index: Dict[str, List[Symbole]]) -> List[dict]:
     """
+    Détection des collisions — implémentation Python pure d'origine.
+
     Regroupe les symboles par nom et retourne ceux définis dans
     ≥ 2 fichiers distincts, triés par nom. Chaque occurrence porte
     son fichier, sa ligne et sa complexité (triés par fichier, ligne).
+    C'est la référence : tout autre backend doit produire une sortie
+    IDENTIQUE (testé dans tests/test_carte.py).
     """
     par_nom: Dict[str, List[Symbole]] = {}
     for symboles in index.values():
@@ -94,6 +99,105 @@ def _detecter_collisions(index: Dict[str, List[Symbole]]) -> List[dict]:
     return collisions
 
 
+def _detecter_collisions_scipy(index: Dict[str, List[Symbole]]) -> List[dict]:
+    """
+    Détection des collisions — backend natif phi_scipy (BinaryCSR).
+
+    L'incidence nom×fichier est un graphe biparti : on la construit en
+    CSR binaire (`BinaryCSR.from_edges`), puis on compte les fichiers
+    distincts par nom de façon vectorisée (les arêtes sont triées par
+    (nom, fichier) dans chaque ligne — un simple comptage des changements
+    de cible suffit, O(nnz) en C). Seuls les noms en collision sont
+    ensuite assemblés : la sortie est IDENTIQUE à `_detecter_collisions_python`.
+
+    Import paresseux (numpy n'est PAS une dépendance dure de
+    phi-complexity : `dependencies = []` dans pyproject.toml) — toute
+    erreur (numpy absent, scipy_mini indisponible) remonte à l'appelant
+    qui dégrade gracieusement vers le Python pur.
+    """
+    import numpy as np
+    from .scipy_mini import BinaryCSR
+
+    noms = sorted({s.nom for symboles in index.values() for s in symboles})
+    if not noms:
+        return []
+    fichiers = sorted(index)
+    id_nom = {nom: i for i, nom in enumerate(noms)}
+    id_fichier = {chemin: i for i, chemin in enumerate(fichiers)}
+    total = sum(len(s) for s in index.values())
+    src = np.fromiter(
+        (id_nom[s.nom] for symboles in index.values() for s in symboles),
+        dtype=np.int64, count=total)
+    tgt = np.fromiter(
+        (id_fichier[s.fichier] for symboles in index.values() for s in symboles),
+        dtype=np.int64, count=total)
+    csr = BinaryCSR.from_edges(src, tgt, len(noms))
+    # Fichiers distincts par nom : `from_edges` déduplique et trie par
+    # (src, tgt) — dans chaque ligne, les cibles sont donc triées.
+    indptr, indices = csr.indptr, csr.indices
+    nnz = csr.nnz
+    ligne = np.repeat(np.arange(len(noms), dtype=np.int64), np.diff(indptr))
+    debut_ligne = np.ones(nnz, dtype=bool)
+    debut_ligne[1:] = (indices[1:] != indices[:-1]) | (ligne[1:] != ligne[:-1])
+    nb_fichiers = np.bincount(ligne, weights=debut_ligne.astype(np.int64),
+                              minlength=len(noms))
+    noms_collision = [noms[i] for i in np.flatnonzero(nb_fichiers >= 2)]
+    # Assemblage : uniquement les noms en collision, dans le même ordre
+    # trié que la version Python pure — sortie identique garantie.
+    en_collision = set(noms_collision)
+    par_nom: Dict[str, List[Symbole]] = {}
+    for symboles in index.values():
+        for s in symboles:
+            if s.nom in en_collision:
+                par_nom.setdefault(s.nom, []).append(s)
+    collisions = []
+    for nom in noms_collision:
+        occurrences = par_nom[nom]
+        fichiers_distincts = {s.fichier for s in occurrences}
+        occs = sorted(
+            (_symbole_vers_dict(s) | {"fichier": s.fichier} for s in occurrences),
+            key=lambda o: (o["fichier"], o["ligne"]),
+        )
+        collisions.append({
+            "nom": nom,
+            "nb_occurrences": len(occs),
+            "nb_fichiers": len(fichiers_distincts),
+            "occurrences": occs,
+        })
+    return collisions
+
+
+def _detecter_collisions(index: Dict[str, List[Symbole]],
+                         utiliser_scipy_mini: bool = True) -> List[dict]:
+    """
+    Détection des collisions — répartiteur de backends.
+
+    Par défaut, tente le backend natif phi_scipy (CSR vectorisé) ; en cas
+    d'échec quelconque (numpy absent, scipy_mini indisponible, erreur
+    inattendue), dégrade GRACIEUSEMENT vers l'implémentation Python pure
+    d'origine — jamais d'exception vers l'appelant, jamais de carte vide.
+    `utiliser_scipy_mini=False` (`phi index --sans-scipy-mini`) force
+    directement l'implémentation d'origine.
+
+    Note de mesure (mission PHI-NATIF-D, 2026-10-08) : les deux backends
+    sont équivalents à ±15 % sur les échelles réalistes (la détection ne
+    pèse que ~0,2 % du temps de `phi index`, dominé par l'analyse et
+    l'audit). Le routage ne se fait donc PAS par `@auto_optimize` :
+    celui-ci route sur la DENSITÉ (seuil 10 %) et l'incidence nom×fichier
+    est toujours ultra-creuse (≪ 1 %) — il choisirait systématiquement le
+    CSR, y compris aux échelles où le Python pur est mesuré plus rapide.
+    Le choix du backend reste explicite (flag) avec repli automatique.
+    """
+    if utiliser_scipy_mini:
+        try:
+            return _detecter_collisions_scipy(index)
+        except Exception as e:
+            # stderr : ne jamais polluer le JSON sur stdout (agents, jq).
+            print(f"⚠ scipy_mini indisponible ({e}) : "
+                  f"repli sur l'implémentation Python pure.", file=sys.stderr)
+    return _detecter_collisions_python(index)
+
+
 def _oudjat_supreme(index: Dict[str, List[Symbole]]) -> Optional[dict]:
     """Le symbole de complexité maximale du projet (avec son fichier)."""
     meilleur: Optional[Symbole] = None
@@ -107,7 +211,8 @@ def _oudjat_supreme(index: Dict[str, List[Symbole]]) -> Optional[dict]:
 
 
 def carte_projet(dossier: str, lang: Optional[str] = None,
-                 exclusions=None, complet: bool = True) -> dict:
+                 exclusions=None, complet: bool = True,
+                 utiliser_scipy_mini: bool = True) -> dict:
     """
     Cartographie un dossier : index des symboles + santé phi par fichier.
 
@@ -121,6 +226,11 @@ def carte_projet(dossier: str, lang: Optional[str] = None,
     = False). La clé `mode` = "rapide" (présente UNIQUEMENT en phase 1)
     dit honnêtement ce que la carte contient : un agent ne doit jamais
     confondre une radiance absente (mode rapide) avec un projet vide.
+    `utiliser_scipy_mini=False` (`phi index --sans-scipy-mini`) force
+    l'implémentation Python pure d'origine pour la détection des
+    collisions ; par défaut le backend natif phi_scipy (CSR) est tenté,
+    avec repli gracieux automatique en cas d'échec. Sortie identique
+    dans tous les cas.
 
     Un fichier qui échoue à l'analyse ou à l'audit est ignoré — mais
     JAMAIS silencieusement : `non_supportes` liste chaque fichier sans
@@ -217,7 +327,8 @@ def carte_projet(dossier: str, lang: Optional[str] = None,
         "radiance_globale": radiance_globale,
         "statut_gnostique_global": statut_global,
         "fichiers": fichiers,
-        "collisions": _detecter_collisions(index),
+        "collisions": _detecter_collisions(index,
+                                           utiliser_scipy_mini=utiliser_scipy_mini),
         "oudjat_supreme": _oudjat_supreme(index) if complet else None,
         "non_supportes": non_supportes,
         "avertissements": avertissements,

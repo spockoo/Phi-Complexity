@@ -4,7 +4,7 @@
 > *Code quality metrics based on Golden Ratio (φ) mathematical invariants*
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/spockoo/phi-complexity/blob/main/LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/spockoo/phi-complexity/blob/main/LICENSE)
 [![Tests](https://github.com/spockoo/Phi-Complexity/actions/workflows/tests.yml/badge.svg)](https://github.com/spockoo/Phi-Complexity/actions)
 
 `phi-complexity` is the **first code quality library** that measures the health of your Python code using **universal mathematical invariants** derived from the Golden Ratio (φ = 1.618...).
@@ -226,11 +226,32 @@ phi veille ./src/ --ref ref.json     # at the start of the next work session
 
 ## 📜 License
 
-MIT — Tomy Verreault, 2026
+**Double licence** — Tomy Verreault, 2026
+
+Vous pouvez choisir l'une des deux licences suivantes :
+
+1. **GNU General Public License v3** (ou ultérieure) — usage libre et open source.
+   Voir [LICENSE](LICENSE) pour le texte complet.
+2. **Licence Commerciale** — pour usage dans un logiciel propriétaire sans
+   obligation de publier le code source. Voir [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md)
+   pour les tarifs (à partir de 200 $/an) et conditions. Contact : tiloup777@outlook.fr
+
+*Les versions 0.16.1 et antérieures restent sous licence MIT.*
+*La double licence s'applique à partir de la version 0.17.0.*
 
 *Anchored in the Bibliothèque Céleste — Morphic Phi Framework (φ-Meta)*
 
 ## 📜 Historique des Versions (Changelog)
+
+- **v0.17.0 (Double licence)** :
+  - **Double licence** : GPL v3 (usage libre/open source) OU Licence Commerciale
+    (usage propriétaire, à partir de 200 $/an — voir `LICENSE-COMMERCIAL.md`).
+  - Nouveau fichier `CONTRIBUTING.md` : clause double licence pour les contributeurs.
+  - *Les versions 0.16.1 et antérieures restent sous licence MIT.*
+
+- **v0.16.1 (Correctif changelog)** :
+  - Ajout de l'entrée changelog **v0.16.0** manquante dans cette section (la 0.16.0 avait été publiée sans son entrée d'historique).
+  - Aucun changement de code depuis 0.16.0.
 
 - **v0.16.0 (Modules v110 + phi telemetry)** :
   - **Nouveaux modules v110** : `sentinelle` (surveillance des processus longs), `markov` (chaînes de Markov sur transitions d'états), `phiwrite` (écriture assistée des rapports), `carnet` (carnet de bord), `journal` (journal horodaté).

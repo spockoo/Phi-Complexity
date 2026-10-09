@@ -290,6 +290,13 @@ class ResultatSonde:
     #   (ex. ch.139 : CONDITIONNEL sous domination + RÉFUTÉ inconditionnel).
     entropie: dict = field(default_factory=dict)
     doubles_verdicts: List[dict] = field(default_factory=list)
+    # Analyse d'impact native (chantier PHI-NATIF-B, 2026-10-08) :
+    # - impact : section « dépendants + score de risque » calculée par
+    #   impact_sonde.analyser_impact quand le mécanisme sondé correspond
+    #   à un symbole Python (fonction, classe, méthode, module).
+    #   Remplie par le CLI (jamais dans sonder() lui-même, qui reste
+    #   pur registre) ; {} = désactivée (--sans-impact).
+    impact: dict = field(default_factory=dict)
 
     def vers_dict(self) -> dict:
         # NOTE : aucune clé de CLES_INTERDITES ne doit jamais apparaître ici.
@@ -300,6 +307,7 @@ class ResultatSonde:
             "statut_mecanisme": self.statut_mecanisme,
             "doubles_verdicts": [dict(dv) for dv in self.doubles_verdicts],
             "entropie": dict(self.entropie),
+            "impact": dict(self.impact),
             "sonde_a": {
                 "route_vers_inconditionnel": [h.vers_dict() for h in self.route_a],
                 "distance_fermeture": [h.vers_dict() for h in self.distance_fermeture],
@@ -1149,6 +1157,41 @@ def rendre_sonde_console(res: ResultatSonde) -> str:
         L.append("│  positif peut se trouver est resserré d'autant.")
     L.append("└" + "─" * 61)
     L.append("")
+    # — Impact natif : dépendants et risque de modification (PHI-NATIF-B) —
+    # Rendu seulement si la section est active ({} = --sans-impact).
+    if res.impact:
+        L.append("┌─ IMPACT — dépendants et risque de modification (natif)")
+        imp = res.impact
+        noeud = imp.get("noeud")
+        avert = imp.get("avertissement")
+        if noeud:
+            L.append(f"│  Symbole : {noeud}")
+            dep = imp.get("dependants", {}) or {}
+            tronq = ", tronqué" if dep.get("tronque") else ""
+            L.append(f"│  Dépendants : {dep.get('nombre', '?')} "
+                     f"(profondeur max {dep.get('profondeur_max', '?')}{tronq})")
+            ris = imp.get("risque", {}) or {}
+            score = ris.get("score")
+            score_txt = f"{score:.1f}/100" if isinstance(score, (int, float)) else "?"
+            L.append(f"│  Score de risque : {score_txt} — "
+                     f"niveau {ris.get('niveau', '?')}")
+            fact = ris.get("facteurs", {}) or {}
+            couvert = "couvert" if fact.get("T") else "non couvert"
+            L.append(f"│    D={fact.get('D', '?')} dépendants, "
+                     f"P={fact.get('P', '?')}, T={couvert} par les tests, "
+                     f"C={fact.get('C', '?')} (cyclomatique)")
+            candidats = imp.get("autres_candidats") or []
+            if candidats:
+                suite = "…" if len(candidats) > 5 else ""
+                L.append(f"│  Autres candidats : {', '.join(candidats[:5])}{suite}")
+            rg = imp.get("graphe", {}) or {}
+            L.append(f"│  Graphe : {rg.get('noeuds', '?')} nœuds, "
+                     f"{rg.get('aretes', '?')} arêtes "
+                     f"(racine : {imp.get('racine', '?')})")
+        if avert:
+            L.append(f"│  ⚠ {avert}")
+        L.append("└" + "─" * 61)
+        L.append("")
     # — Doubles verdicts : statuts scindés, jamais un seul statut —
     if res.doubles_verdicts:
         L.append("┌─ DOUBLES VERDICTS — statuts scindés au niveau nœud")

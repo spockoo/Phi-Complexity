@@ -58,6 +58,11 @@ Exemples :
                        help="Formule arithmétique personnalisée évaluée sur les métriques")
     check.add_argument("--gate", default=None,
                        help="Porte logique de qualité : exit 1 si l'expression est fausse")
+    check.add_argument("--sans-cache", action="store_true",
+                       help="Désactive le parse cache natif (re-parse systématique des fichiers)")
+    check.add_argument("--stats-cache", action="store_true",
+                       help="Affiche les statistiques du parse cache en fin d'audit "
+                            "(hits, hit rate, taille)")
 
     report = subparsers.add_parser("report", help="Générer un rapport Markdown")
     report.add_argument("cible", help="Fichier à analyser")
@@ -80,6 +85,27 @@ Exemples :
     edit.add_argument("--lang", default=None,
                       help="Force le langage pour l'audit phi (ex: python)")
 
+    compress_cmd = subparsers.add_parser("compress", help="Compresse un dossier en archive .phiz (optimisé Lean)")
+    compress_cmd.add_argument("source", help="Dossier à compresser")
+    compress_cmd.add_argument("-o", "--output", required=True, help="Archive .phiz de sortie")
+    compress_cmd.add_argument("--jobs", type=int, default=4, help="Threads de compression (défaut: 4)")
+    compress_cmd.add_argument("--per-file", action="store_true",
+                              help="Compression par fichier (accès aléatoire fin, ratio légèrement moindre)")
+    compress_cmd.add_argument("--bloc", type=int, default=10,
+                              help="Taille des blocs solides en Mo (défaut: 10, 0=per-file)")
+    compress_cmd.add_argument("--split", type=int, default=0, metavar="MO",
+                              help="Découpe l'archive en parties de N Mo (défaut: 0=pas de découpage)")
+    compress_cmd.set_defaults(commande="compress")
+
+    decompress_cmd = subparsers.add_parser("decompress", help="Décompresse une archive .phiz")
+    decompress_cmd.add_argument("archive", help="Archive .phiz")
+    decompress_cmd.add_argument("-o", "--output", default=None, help="Dossier de destination (défaut: ./<nom>)")
+    decompress_cmd.add_argument("--list", action="store_true", help="Liste les fichiers sans extraire")
+    decompress_cmd.add_argument("--extract", default=None, metavar="CHEMIN",
+                                help="Extrait un seul fichier (accès aléatoire)")
+    decompress_cmd.add_argument("--jobs", type=int, default=4, help="Threads (défaut: 4)")
+    decompress_cmd.set_defaults(commande="decompress")
+
     index = subparsers.add_parser("index", help="Carte du projet : symboles, collisions, santé phi")
     index.add_argument("dossier", help="Dossier projet à cartographier")
     index.add_argument("--format", choices=["console", "json"], default="console",
@@ -98,6 +124,11 @@ Exemples :
                             "sans calculer les métriques — quasi-instantané. "
                             "La radiance et l'oudjat sont alors non calculés "
                             "(null dans le JSON, signalés dans la console).")
+    index.add_argument("--sans-scipy-mini", action="store_true",
+                       help="N'utilise pas le backend natif phi_scipy "
+                            "(graphe CSR) pour la détection des collisions : "
+                            "revient à l'implémentation Python pure d'origine. "
+                            "Sortie identique, juste le moteur de calcul change.")
 
     chemins = subparsers.add_parser("chemins", help="Carte croyante : symboles classés par postérieur "
                                                     "(quel trou attaquer en premier)")
@@ -151,6 +182,10 @@ Exemples :
                         help="Dossiers supplémentaires à exclure, séparés par des virgules")
     veille.add_argument("--no-exclude", action="store_true",
                         help="Désactive les exclusions par défaut")
+    veille.add_argument("--sans-lilith", action="store_true",
+                        help="Désactive la section Lilith native "
+                             "(métriques var_relative/n_eff par fichier Python, "
+                             "affichées par défaut)")
 
     oracle = subparsers.add_parser("oracle",
                                    help="Traces d'oracle : la chaîne de raisonnement "
@@ -184,6 +219,20 @@ Exemples :
                        help="Inclure hors_chaine_clay/ dans la détection de "
                             "doublons (exclu par défaut : déclaré hors de la "
                             "chaîne Clay)")
+
+    vigilance = subparsers.add_parser("vigilance",
+                                      help="Détecteurs absolus (état unique) : "
+                                           "hypothèses impossibles, axiomes, "
+                                           "hypothèses inutilisées "
+                                           "(faits uniquement, jamais de verdict)")
+    vigilance.add_argument("cible",
+                           help="Fichier .lean ou dossier à analyser")
+    vigilance.add_argument("--format", choices=["console", "json"],
+                           default="console",
+                           help="Format de sortie (défaut : console)")
+    vigilance.add_argument("--sans-inutilisees", action="store_true",
+                           help="Désactiver le détecteur d'hypothèses "
+                                "inutilisées (signal faible)")
 
     sismique = subparsers.add_parser("sismique",
                                      help="Témoin : mémoire des rythmes via "
@@ -226,7 +275,8 @@ Exemples :
     sonde = subparsers.add_parser("sonde",
                                   help="Sondes A/B : tracer l'inconditionnel à "
                                        "partir du conditionnel (pôle fermeture / "
-                                       "pôle obstruction)")
+                                       "pôle obstruction) + analyse d'impact "
+                                       "Python native du symbole sondé")
     sonde.add_argument("mecanisme",
                        help="Mécanisme à sonder : sorry du Master "
                             "(ex. energy_identity), hypothèse nommée "
@@ -245,6 +295,11 @@ Exemples :
                             "(mode --format json uniquement : attache la "
                             "section `entropie` par nœud ; défaut : "
                             "~/workspace/lean-navier-stokes)")
+    sonde.add_argument("--sans-impact", action="store_true",
+                       help="Désactive l'analyse d'impact Python native "
+                            "(activée par défaut : section Impact calculée "
+                            "quand le mécanisme sondé correspond à un "
+                            "symbole Python du paquet phi_complexity)")
 
     piste_sorry = subparsers.add_parser("piste-sorry",
                                         help="Piste d'un sorry : inventaire "
@@ -485,6 +540,72 @@ Exemples :
                                     "(pour le %%)")
     telemetry_cmd.set_defaults(commande="telemetry")
 
+    lilith_cmd = subparsers.add_parser("lilith",
+                                       help="Instruments Lilith : métriques, "
+                                            "batterie tri-domaine, curseur α, F1")
+    lilith_cmd.add_argument("reste", nargs=argparse.REMAINDER,
+                            help="Arguments passés à l'adaptateur lilith. "
+                                 "Mettre '--' avant les options lilith "
+                                 "(ex: phi lilith -- --format json mesurer "
+                                 "fichier.py)")
+    lilith_cmd.set_defaults(commande="lilith")
+
+    lean_cmd = subparsers.add_parser("lean", help="Toolchain Lean mini : installation et compilation")
+    lean_cmd.add_argument("--init", action="store_true", help="Télécharge et installe la toolchain Lean mini (125 Mo)")
+    lean_cmd.add_argument("--install-mathlib", action="store_true",
+                          help="Installe Mathlib via le téléchargeur rapide (parallèle, multi-miroirs)")
+    lean_cmd.add_argument("--jobs", type=int, default=None,
+                          help="Connexions parallèles pour --install-mathlib (défaut: 8, max: 16)")
+    lean_cmd.add_argument("--miroir", default=None,
+                          help="Miroir Mathlib forcé (défaut: auto-sélection du plus rapide)")
+    lean_cmd.add_argument("--liste-urls", default=None, metavar="FICHIER",
+                          help="Fichier avec une URL .ltar par ligne (pour --install-mathlib)")
+    lean_cmd.add_argument("--dest-mathlib", default=None, metavar="DOSSIER",
+                          help="Dossier de destination (défaut: ~/.cache/phi-complexity/mathlib)")
+    lean_cmd.add_argument("--extension", choices=["std", "lean"], default=None,
+                          help="Avec --init : installe aussi l'extension optionnelle "
+                               "'std' (import Std, +290 Mo) ou 'lean' (import Lean, "
+                               "+1,2 Go, inclut std). Extraction à la demande depuis "
+                               "l'archive déjà en cache (aucun téléchargement "
+                               "supplémentaire).")
+    lean_cmd.add_argument("--avec-lake", action="store_true",
+                          help="Avec --init (ou seul) : installe aussi Lake, le "
+                               "gestionnaire de projets Lean (+34 Mo ; `lake new` "
+                               "/ `lake build` sur lakefile.toml, exécutables "
+                               "natifs inclus).")
+    lean_cmd.add_argument("--lake", nargs=argparse.REMAINDER, default=None,
+                          metavar="ARGS",
+                          help="Exécute lake avec ces arguments (ex : phi lean "
+                               "lake new monprojet — sans argument : aide de "
+                               "lake). Seuls les projets lakefile.toml sont "
+                               "supportés (pas lakefile.lean).")
+    lean_cmd.add_argument("--version", action="store_true", help="Affiche la version de la toolchain installée")
+    lean_cmd.add_argument("--ou", action="store_true", help="Affiche le chemin d'installation")
+    lean_cmd.add_argument("--update-mathlib", action="store_true",
+                          help="Met à jour Mathlib (plan affiché, feu vert requis si >100 Mo)")
+    lean_cmd.add_argument("--mathlib-version", action="store_true",
+                          help="Affiche la version Mathlib installée")
+    lean_cmd.add_argument("--migrer", metavar="VERSION", default=None,
+                          help="Migre vers une autre version Lean "
+                               "(ex. --migrer 4.34.0). Télécharge si nécessaire, "
+                               "bascule la version active, journalise.")
+    lean_cmd.add_argument("--versions", action="store_true",
+                          help="Liste les versions Lean installées")
+    lean_cmd.add_argument("--active", action="store_true",
+                          help="Affiche la version Lean active")
+    lean_cmd.add_argument("--revenir", action="store_true",
+                          help="Revient à la version précédente (rollback)")
+    lean_cmd.add_argument("--nettoyer", action="store_true",
+                          help="Supprime les versions non actives "
+                               "(dry-run sans --oui)")
+    lean_cmd.add_argument("--oui", action="store_true",
+                          help="Confirme sans demander (pour --migrer et --nettoyer)")
+    lean_cmd.add_argument("--timeout", type=int, default=300, help="Délai max compilation (s)")
+    groupe = lean_cmd.add_mutually_exclusive_group()
+    groupe.add_argument("--exec", action="store_true", help="Exécute via lean --run au lieu de compiler")
+    lean_cmd.add_argument("fichier", nargs="?", default=None, help="Fichier .lean à compiler/exécuter")
+    lean_cmd.set_defaults(commande="lean")
+
     return parser
 
 
@@ -518,17 +639,59 @@ def _collecter_fichiers(cible: str) -> list:
 # ────────────────────────────────────────────────────────
 
 def _executer_check(args: argparse.Namespace, fichiers: list) -> int:
-    """Exécute la sous-commande 'check'. Retourne le code de sortie."""
-    # Si la cible est un dossier avec plus d'un fichier et que le format est console, afficher d'abord la matrice
-    if os.path.isdir(args.cible) and len(fichiers) > 1 and args.format == "console":
-        from . import rapport_matrice_console
-        print(rapport_matrice_console(args.cible))
-        print()
+    """Exécute la sous-commande 'check'. Retourne le code de sortie.
+
+    Le parse cache natif (PHI-NATIF-C) est actif par défaut : une session
+    est ouverte sur la cible, chaque fichier audité consulte le cache avant
+    de re-parser, et le cache est persisté sur disque à la sortie.
+    `--sans-cache` désactive ce comportement ; `--stats-cache` affiche les
+    statistiques en fin d'audit. Le cache est transparent : même sortie,
+    juste plus rapide — et toute défaillance dégrade gracieusement vers le
+    parsing normal, jamais de crash.
+    """
+    from .cache import session_parse_cache
+    sans_cache = bool(getattr(args, "sans_cache", False))
+    stats_cache = bool(getattr(args, "stats_cache", False))
 
     exit_code = 0
-    for fichier in fichiers:
-        exit_code = max(exit_code, _auditer_un_fichier(fichier, args))
+    # La session ne lève jamais (dégradation gracieuse interne) : le `with`
+    # couvre aussi la matrice projet pour que le second passage (l'audit
+    # fichier par fichier) bénéficie des hits du premier.
+    with session_parse_cache(args.cible, sans_cache=sans_cache) as cache:
+        # Si la cible est un dossier avec plus d'un fichier et que le format est console, afficher d'abord la matrice
+        if os.path.isdir(args.cible) and len(fichiers) > 1 and args.format == "console":
+            from . import rapport_matrice_console
+            print(rapport_matrice_console(args.cible))
+            print()
+
+        for fichier in fichiers:
+            exit_code = max(exit_code, _auditer_un_fichier(fichier, args))
+        if stats_cache:
+            _afficher_stats_cache(cache, args.cible)
     return exit_code
+
+
+def _afficher_stats_cache(cache, cible: str) -> None:
+    """Affiche les statistiques du parse cache (option --stats-cache)."""
+    try:
+        from .cache import resoudre_racine_cache
+        if cache is None:
+            print("── Parse cache : désactivé (--sans-cache) ──")
+            return
+        stats = cache.stats()
+        racine = resoudre_racine_cache(cible)
+        total = stats["hits"] + stats["misses"]
+        taux = (100.0 * stats["hits"] / total) if total else 0.0
+        print("── Parse cache ──")
+        print(f"  racine    : {racine}")
+        print(f"  hits      : {stats['hits']}")
+        print(f"  misses    : {stats['misses']}")
+        print(f"  hit rate  : {taux:.1f} %")
+        print(f"  entrées   : {stats['entrees']} / {stats['capacite']}")
+        print(f"  évictions : {stats['evictions']}")
+    except Exception as e:
+        # Les stats sont informatives : leur échec ne doit pas masquer l'audit.
+        print(f"  ⚠ Statistiques du cache indisponibles : {e}")
 
 
 def _auditer_un_fichier(fichier: str, args: argparse.Namespace) -> int:
@@ -669,6 +832,115 @@ def _executer_edit(args: argparse.Namespace) -> int:
         return 1
     return 0
 
+def _executer_compress(args: argparse.Namespace) -> int:
+    """Exécute 'phi compress' : dossier -> archive .phiz."""
+    from pathlib import Path
+    from .toolchain.compress import PhizWriter, split_file
+    import time
+
+    source = Path(args.source)
+    output = Path(args.output)
+    if not source.is_dir():
+        print(f"❌ Dossier introuvable : {source}")
+        return 1
+
+    block_size = 0 if args.per_file else args.bloc * 1024 * 1024
+    mode = "per-file" if args.per_file else f"solide ({args.bloc} Mo/bloc)"
+
+    print(f"📦 Compression {mode} : {source} -> {output}")
+    start = time.time()
+
+    def progress(done, total, name):
+        pct = done / total * 100 if total else 0
+        print(f"\r  [{done}/{total}] {pct:.0f}% {name[:50]}", end="", flush=True)
+
+    try:
+        writer = PhizWriter(output, jobs=args.jobs, progress_cb=progress,
+                            solid_block_size=block_size)
+        summary = writer.write(source)
+    except Exception as e:
+        print(f"\n❌ Échec : {e}")
+        return 1
+
+    elapsed = time.time() - start
+    print(f"\n✅ {summary['files']} fichiers en {elapsed:.1f}s")
+    print(f"   Original : {summary['original_bytes']:,} octets")
+    print(f"   Compressé : {summary['compressed_bytes']:,} octets")
+    print(f"   Ratio : {summary['ratio_pct']:.1f}%")
+
+    if args.split > 0:
+        chunk = args.split * 1024 * 1024
+        parts_dir = output.parent / f"{output.name}.parts"
+        print(f"✂️  Découpage en parties de {args.split} Mo...")
+        parts = split_file(output, chunk, parts_dir,
+                           progress_cb=lambda d, t: print(f"\r  Partie {d}/{t}", end="", flush=True))
+        print(f"\n✅ {len(parts)} parties dans {parts_dir}/")
+        print(f"   Manifeste : {parts_dir}/{output.name}.manifest")
+    return 0
+
+
+def _executer_decompress(args: argparse.Namespace) -> int:
+    """Exécute 'phi decompress' : archive .phiz -> dossier."""
+    from pathlib import Path
+    from .toolchain.compress import PhizReader
+    import time
+
+    archive = Path(args.archive)
+    if not archive.exists():
+        print(f"❌ Archive introuvable : {archive}")
+        return 1
+
+    try:
+        reader = PhizReader(archive)
+    except Exception as e:
+        print(f"❌ Archive illisible : {e}")
+        return 1
+
+    mode = "solide" if reader.solid else "per-file"
+    print(f"📦 Archive .phiz ({mode}) : {len(reader.entries)} fichiers")
+
+    if args.list:
+        for path in reader.list_files():
+            print(f"  {path}")
+        return 0
+
+    if args.extract:
+        try:
+            data = reader.extract_file(args.extract)
+        except KeyError:
+            print(f"❌ Fichier absent de l'archive : {args.extract}")
+            return 1
+        except ValueError as e:
+            print(f"❌ {e}")
+            return 1
+        out = Path(args.output) if args.output else Path(args.extract).name
+        out = Path(out)
+        if out.is_dir() or args.output is None:
+            out = (Path(args.output) if args.output else Path(".")) / Path(args.extract).name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        print(f"✅ Extrait : {args.extract} -> {out} ({len(data):,} octets)")
+        return 0
+
+    dest = Path(args.output) if args.output else Path(archive.stem)
+    print(f"📂 Extraction vers {dest}/")
+    start = time.time()
+
+    def progress(done, total, name):
+        pct = done / total * 100 if total else 0
+        print(f"\r  [{done}/{total}] {pct:.0f}% {name[:50]}", end="", flush=True)
+
+    try:
+        reader.extract_all(dest, progress_cb=progress, jobs=args.jobs)
+    except Exception as e:
+        print(f"\n❌ Échec : {e}")
+        return 1
+
+    elapsed = time.time() - start
+    print(f"\n✅ Extraction terminée en {elapsed:.1f}s")
+    return 0
+
+
 def _executer_index(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'index' : carte du projet (console ou json)."""
     import json
@@ -697,7 +969,8 @@ def _executer_index(args: argparse.Namespace) -> int:
     try:
         carte = carte_projet(dossier, lang=getattr(args, "lang", None),
                              exclusions=exclusions,
-                             complet=not getattr(args, "rapide", False))
+                             complet=not getattr(args, "rapide", False),
+                             utiliser_scipy_mini=not getattr(args, "sans_scipy_mini", False))
     except Exception as e:
         print(f"❌ Erreur lors de la cartographie : {e}")
         return 1
@@ -762,6 +1035,118 @@ def _executer_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+# ────────────────────────────────────────────────────────
+# LILITH NATIVE DANS LA VEILLE (PHI-NATIF-A, 2026-10-08)
+# ────────────────────────────────────────────────────────
+# La veille mesure désormais, pour chaque fichier Python audité, la
+# variance relative Lilith var_relative = χ²(P‖Q₀) = n·‖P−Q₀‖²₂ calculée
+# sur le profil κ (complexités AST des fonctions du fichier).
+# var_relative > 2,95 ⇒ concentration suspecte : une F1 (violation de
+# décomposition) est possible dans ce fichier — l'alerte est EXHIBÉE,
+# elle ne fait jamais basculer le verdict de la veille (instrument qui
+# montre, jamais juge automatisé).
+# n_eff = n / (1 + var_relative) : taille d'échantillon effective,
+# dégradée par la concentration (n fonctions, n_eff fonctions
+# « vraiment indépendantes »).
+
+SEUIL_LILITH_VAR_RELATIVE = 2.95
+
+
+def _dossier_exclu_lilith(nom: str, exclusions) -> bool:
+    """Même convention que l'indexeur : nom exact ou .egg-info."""
+    if not exclusions:
+        return False
+    return nom in exclusions or nom.endswith(".egg-info")
+
+
+def _fichiers_python_audites(dossier: str, exclusions) -> list:
+    """Chemins relatifs des .py audités par la veille.
+
+    Respecte les exclusions effectives (--exclude/--no-exclude) et ignore
+    les répertoires cachés : la section Lilith audite exactement les
+    fichiers que la veille surveille, ni plus ni moins.
+    """
+    trouves = []
+    for racine, dirs, noms in os.walk(dossier):
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".")
+                   and not _dossier_exclu_lilith(d, exclusions)]
+        for nom in sorted(noms):
+            if nom.endswith(".py"):
+                trouves.append(os.path.relpath(
+                    os.path.join(racine, nom), dossier))
+    return trouves
+
+
+def _section_lilith_veille(dossier: str, exclusions) -> dict:
+    """Section Lilith du diff de veille : métriques par fichier Python.
+
+    Pour chaque fichier : n (fonctions détectées), var_relative (χ² au
+    profil uniforme), n_eff = n / (1 + var_relative). Les fichiers non
+    parsables ou sans fonction sont exhibés comme tels, jamais
+    silencieusement ignorés. var_relative > 2,95 ⇒ alerte « F1
+    suspectée ».
+    """
+    from .lilith import var_relative, kappas_depuis_fichier
+    fichiers = {}
+    alertes = []
+    for rel in _fichiers_python_audites(dossier, exclusions):
+        try:
+            kappas = kappas_depuis_fichier(os.path.join(dossier, rel))
+        except Exception:
+            kappas = None
+        if not kappas:
+            fichiers[rel] = {"n": 0,
+                             "note": "non parsable ou sans fonction détectée"}
+            continue
+        n = len(kappas)
+        vr = var_relative(kappas)
+        n_eff = n / (1.0 + vr)
+        fichiers[rel] = {
+            "n": n,
+            "var_relative": round(vr, 4),
+            "n_eff": round(n_eff, 2),
+        }
+        if vr > SEUIL_LILITH_VAR_RELATIVE:
+            alertes.append(
+                f"⚠ LILITH: {rel} — var_relative={vr:.2f} > "
+                f"{SEUIL_LILITH_VAR_RELATIVE:.2f} (F1 suspectée)")
+    return {
+        "active": True,
+        "seuil_var_relative": SEUIL_LILITH_VAR_RELATIVE,
+        "nb_fichiers": len(fichiers),
+        "nb_alertes": len(alertes),
+        "fichiers": fichiers,
+        "alertes": alertes,
+    }
+
+
+def _rendre_lilith_console(section: dict) -> str:
+    """Rend la section Lilith lisible dans un terminal."""
+    lignes = ["", "── LILITH (native) ──"]
+    if not section.get("active"):
+        lignes.append(f"  section Lilith désactivée : "
+                      f"{section.get('note', '--sans-lilith')}")
+        return "\n".join(lignes)
+    lignes.append(
+        f"  {section['nb_fichiers']} fichier(s) Python audité(s), "
+        f"{section['nb_alertes']} alerte(s) "
+        f"(seuil var_relative > {section['seuil_var_relative']:.2f})")
+    for alerte in section["alertes"]:
+        lignes.append(f"  {alerte}")
+    # Top concentration (informatif) : les 5 var_relative les plus élevés.
+    top = sorted(
+        ((rel, m) for rel, m in section["fichiers"].items()
+         if "var_relative" in m),
+        key=lambda it: -it[1]["var_relative"])[:5]
+    if top:
+        lignes.append("  concentration max (var_relative / n_eff) :")
+        for rel, m in top:
+            lignes.append(
+                f"    • {rel} : {m['var_relative']:.2f} / {m['n_eff']:.2f}")
+    return "\n".join(lignes)
+
+
 def _executer_veille(args: argparse.Namespace) -> int:
     """Exécute la sous-commande 'veille' : diff contre la référence."""
     import json
@@ -781,10 +1166,27 @@ def _executer_veille(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"❌ Erreur lors de la veille : {e}")
         return 1
+    # PHI-NATIF-A (2026-10-08) : Lilith native — métriques de concentration
+    # (var_relative, n_eff) par fichier Python, exhibées par défaut,
+    # désactivables par --sans-lilith. La section est informative : elle ne
+    # fait jamais échouer la veille ni basculer son verdict.
+    if getattr(args, "sans_lilith", False):
+        diff["lilith"] = {
+            "active": False,
+            "note": "section Lilith désactivée (--sans-lilith)",
+        }
+    else:
+        try:
+            diff["lilith"] = _section_lilith_veille(
+                dossier, _exclusions_depuis_args(args))
+        except Exception as e:
+            diff["lilith"] = {"active": False,
+                              "note": f"section Lilith indisponible : {e}"}
     if getattr(args, "format", "console") == "json":
         print(json.dumps(diff, ensure_ascii=False, indent=2))
     else:
         print(veille_console(diff))
+        print(_rendre_lilith_console(diff["lilith"]))
     # Durcissement 2026-10-01 : un instrument dégradé échoue bruyamment
     # (exit 3, distinct de 2 = dégradation détectée). Jamais de ✅ STABLE
     # sur un arrière-plan perdu.
@@ -926,6 +1328,23 @@ def _executer_sonde(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"❌ Erreur lors du sondage : {e}")
         return 1
+    # Analyse d'impact native (PHI-NATIF-B) : construite UNE SEULE FOIS
+    # par invocation, sur le paquet phi_complexity. Dégradation gracieuse
+    # (avertissement dans la section, jamais de crash) si le symbole n'est
+    # pas Python ou si le graphe échoue. --sans-impact la désactive.
+    if not getattr(args, "sans_impact", False):
+        try:
+            from .impact_sonde import analyser_impact
+            resultat.impact = analyser_impact(args.mecanisme)
+        except Exception as e:
+            resultat.impact = {
+                "desactive": True,
+                "symbole_recherche": args.mecanisme,
+                "avertissement": (
+                    f"analyse d'impact indisponible "
+                    f"({type(e).__name__} : {e})"
+                ),
+            }
     if getattr(args, "format", "console") == "json":
         # Ancrage entropique (import direct d'entropie.py via ancrage.py —
         # jamais de subprocess) : section `entropie` par nœud + mécanisme.
@@ -1546,6 +1965,597 @@ def _executer_telemetry(args: argparse.Namespace) -> int:
         donnees, chemin, total_attendu=getattr(args, "total", 208018))
 
 
+def _executer_lilith(args: argparse.Namespace) -> int:
+    """Exécute 'lilith' : instruments Lilith (métriques, batterie, α, F1).
+
+    Délègue à l'adaptateur phi_lilith (contrat PHI_CONTRAT.md) : les
+    arguments après 'lilith' lui sont passés tels quels.
+    Exemples :
+      phi lilith mesurer mon_module.py
+      phi lilith batterie mon_module.py --format json
+      phi lilith f1 mon_module.py
+      phi lilith alpha mon_module.py --alphas 1,2,inf
+    """
+    from .lilith import phi_lilith
+    reste = getattr(args, "reste", []) or []
+    # argparse.REMAINDER capture aussi le séparateur '--' éventuel.
+    if reste and reste[0] == "--":
+        reste = reste[1:]
+    if not reste:
+        print("Usage : phi lilith {mesurer|batterie|alpha|f1|perf} "
+              "[options] (voir phi_lilith --help)")
+        return 2
+    return phi_lilith.main(reste)
+
+
+def _executer_lake_cmd(manager, args_lake, timeout) -> int:
+    """Exécute `phi lean lake <args>` : délègue au binaire lake installé.
+
+    Args:
+        manager: ToolchainManager (déjà construit).
+        args_lake: liste d'arguments passés à lake ([] = aide de lake).
+        timeout: délai max d'exécution (s).
+    """
+    from .toolchain import LakeAbsent, LakeConfigNonSupportee
+    try:
+        resultat = manager.executer_lake(args_lake, timeout_s=timeout)
+    except LakeAbsent as e:
+        print("❌ %s" % e)
+        return 1
+    except LakeConfigNonSupportee as e:
+        print("❌ %s" % e)
+        return 1
+    if resultat.get("stdout"):
+        print(resultat["stdout"], end="")
+    if resultat.get("stderr"):
+        print(resultat["stderr"], end="", file=sys.stderr)
+    return 0 if resultat.get("ok") else 1
+
+
+def _executer_lean(args: argparse.Namespace) -> int:
+    """Exécute 'lean' : toolchain Lean mini (installation, compilation).
+
+    Exemples :
+      phi lean --init              # télécharge et installe la toolchain
+      phi lean --init --extension std   # + bibliothèque Std (import Std)
+      phi lean --init --extension lean  # + bibliothèque Lean (import Lean)
+      phi lean --init --avec-lake  # + Lake (gestionnaire de projets, +34 Mo)
+      phi lean --version            # affiche la version installée
+      phi lean --ou                 # affiche le chemin d'installation
+      phi lean preuve.lean          # compile le fichier
+      phi lean preuve.lean --exec   # exécute via lean --run
+      phi lean lake new monprojet   # lake new (projet lakefile.toml)
+      phi lean lake build           # lake build dans le projet courant
+    """
+    from .toolchain import ToolchainManager, ToolchainAbsente
+    from .toolchain import VersionNonSupportee, lire_version_projet
+    from .toolchain.version import FormatLeanToolchainInvalide
+    from .toolchain.download import ErreurTelechargement, ErreurVerification
+    from .toolchain.extract import ErreurExtraction
+    from .toolchain.validate import ErreurValidation
+    from .toolchain.migration import (
+        GestionnaireVersions,
+        MigrationImpossible,
+        RollbackImpossible,
+        VersionInconnue,
+    )
+    from .toolchain.mathlib import TelechargementRefuse
+
+    gestionnaire = GestionnaireVersions()
+    # La version ACTIVE pilote toutes les opérations (repli historique :
+    # manifeste embarqué si aucun pointeur .active).
+    manager = gestionnaire.manager_actif()
+
+    def _afficher_progression(phase, info):
+        if phase == "deja_installee":
+            print("Toolchain déjà installée : %s" % info.get("rep", ""))
+        elif phase == "telechargement":
+            octets = info.get("octets", 0)
+            print("Téléchargement : %.1f Mo téléchargés"
+                  % (octets / 1e6), end="\r", flush=True)
+        elif phase == "extraction":
+            print("Extraction : %d fichiers (%.1f Mo)"
+                  % (info.get("fichiers", 0), info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "validation":
+            print("\nValidation…", flush=True)
+        elif phase == "extension_extraction":
+            print("Extension '%s' : %d fichiers (%.1f Mo)"
+                  % (info.get("extension"), info.get("fichiers", 0),
+                     info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "extension_validation":
+            print("\nValidation de l'extension '%s'…"
+                  % info.get("extension"), flush=True)
+        elif phase == "extraction_lake":
+            print("Lake : %d fichiers (%.1f Mo)"
+                  % (info.get("fichiers", 0), info.get("octets", 0) / 1e6),
+                  end="\r", flush=True)
+        elif phase == "validation_lake":
+            print("\nValidation de Lake…", flush=True)
+        elif phase == "terminee":
+            print("\nInstallation terminée : %s" % info.get("rep", ""))
+
+    def _installer_ou_erreur():
+        """Installe la toolchain (idempotent). True si OK, False sinon."""
+        try:
+            resultat = manager.installer(
+                progression=_afficher_progression,
+                avec_lake=getattr(args, "avec_lake", False),
+            )
+        except (ErreurTelechargement, ErreurVerification) as e:
+            print("❌ Échec du téléchargement : %s" % e)
+            return False
+        except ErreurExtraction as e:
+            print("❌ Échec de l'extraction : %s" % e)
+            return False
+        except ErreurValidation as e:
+            print("❌ Échec de la validation : %s" % e)
+            return False
+        print("Toolchain Lean %s installée : %s"
+              % (resultat.get("version"), resultat.get("rep")))
+        return True
+
+    if args.init or getattr(args, "avec_lake", False):
+        if not _installer_ou_erreur():
+            return 1
+        extension = getattr(args, "extension", None)
+        if extension:
+            try:
+                resultat_ext = manager.installer_extension(
+                    extension, progression=_afficher_progression)
+            except ValueError as e:
+                print("❌ Extension : %s" % e)
+                return 1
+            except (ErreurExtraction, ErreurValidation) as e:
+                print("❌ Échec de l'extension '%s' : %s" % (extension, e))
+                return 1
+            print("Extension '%s' installée : %s (%s)"
+                  % (extension, resultat_ext.get("statut"),
+                     resultat_ext.get("rep")))
+        return 0
+
+    if args.version:
+        if manager.est_installee():
+            print("Lean %s" % manager.version)
+            if manager.lake_installe():
+                try:
+                    from .toolchain.validate import valider_lake
+                    info_lake = valider_lake(manager.rep_install)
+                    print(info_lake["version"])
+                except ErreurValidation:
+                    print("Lake : installation incomplète "
+                          "(phi lean --init --avec-lake)")
+        else:
+            print("toolchain absente (phi lean --init)")
+        version_projet, chemin_tc = None, None
+        try:
+            version_projet, chemin_tc = lire_version_projet(os.getcwd())
+        except FormatLeanToolchainInvalide as e:
+            print("Projet : lean-toolchain invalide — %s" % e)
+        if chemin_tc is not None:
+            print("Projet (lean-toolchain : %s) : version %s"
+                  % (chemin_tc, version_projet))
+        return 0
+
+    if args.ou:
+        print(manager.rep_install)
+        return 0
+
+    args_lake = getattr(args, "lake", None)
+    if args_lake is not None:
+        return _executer_lake_cmd(manager, args_lake, args.timeout)
+
+    # ── migration entre versions ──────────────────────────
+
+    if getattr(args, "versions", False):
+        installees = gestionnaire.versions_installees()
+        active = gestionnaire.version_active()
+        if not installees:
+            print("Aucune toolchain installée (phi lean --init)")
+        for info in installees:
+            marque = " ← active" if info["version"] == active else ""
+            natif = " (+natif)" if info.get("natif") else ""
+            print("Lean %s%s%s : %s"
+                  % (info["version"], natif, marque, info["rep"]))
+        return 0
+
+    if getattr(args, "active", False):
+        active = gestionnaire.version_active()
+        if active:
+            print("Lean %s" % active)
+        else:
+            print("aucune version active (phi lean --init)")
+        return 0
+
+    if getattr(args, "migrer", None):
+        cible = args.migrer
+        try:
+            from .toolchain.version import normaliser_version as _norm
+            cible_norm = _norm(cible)
+        except Exception:
+            cible_norm = cible.strip()
+        # Projets impactés : détection seule, jamais de migration auto.
+        try:
+            impactes = gestionnaire.projets_utilisant(cible_norm, os.getcwd())
+        except Exception:
+            impactes = []
+        if impactes:
+            print("Projets demandant Lean %s sous %s :"
+                  % (cible_norm, os.getcwd()))
+            for p in impactes:
+                print("  - %s" % p["projet"])
+            print("(leurs lean-toolchain ne seront pas modifiés "
+                  "automatiquement)")
+
+        def _confirmer(v, taille):
+            if args.oui:
+                return True
+            print("Migration vers Lean %s : téléchargement de %.1f Mo requis."
+                  % (v, taille / 1e6))
+            try:
+                reponse = input("Confirmer ? [o/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAnnulé.")
+                return False
+            return reponse in ("o", "oui", "y", "yes")
+
+        try:
+            resultat = gestionnaire.migrer(
+                cible, progression=_afficher_progression,
+                raison="phi lean --migrer %s" % cible,
+                confirmer=_confirmer)
+        except VersionInconnue as e:
+            print("❌ %s" % e)
+            return 1
+        except MigrationImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        except TelechargementRefuse as e:
+            print("\n⛔ %s" % e)
+            return 3
+        except (ErreurTelechargement, ErreurVerification) as e:
+            print("❌ Échec du téléchargement : %s" % e)
+            return 1
+        except ErreurExtraction as e:
+            print("❌ Échec de l'extraction : %s" % e)
+            return 1
+        except ErreurValidation as e:
+            print("❌ Échec de la validation : %s" % e)
+            return 1
+        statut = resultat.get("statut")
+        if statut == "DEJA_ACTIVE":
+            print("Lean %s est déjà la version active." % cible_norm)
+        else:
+            print("Migration terminée : %s → %s%s"
+                  % (resultat.get("de") or "(aucune)",
+                     resultat.get("vers"),
+                     " (téléchargée)" if resultat.get("telechargee") else ""))
+        return 0
+
+    if getattr(args, "revenir", False):
+        try:
+            resultat = gestionnaire.revenir(
+                raison="phi lean --revenir")
+        except RollbackImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        print("Retour à Lean %s (était %s)."
+              % (resultat["vers"], resultat["de"]))
+        return 0
+
+    if getattr(args, "nettoyer", False):
+        installees = gestionnaire.versions_installees()
+        active = gestionnaire.version_active()
+        a_supprimer = [i for i in installees if i["version"] != active]
+        if not a_supprimer:
+            print("Rien à nettoyer.")
+            return 0
+        print("Versions à supprimer :")
+        for info in a_supprimer:
+            print("  - Lean %s : %s" % (info["version"], info["rep"]))
+        if not args.oui:
+            print("Relancez avec --oui pour confirmer la suppression.")
+            return 0
+        try:
+            resultat = gestionnaire.nettoyer(
+                confirmer=lambda lst: True)
+        except MigrationImpossible as e:
+            print("❌ %s" % e)
+            return 1
+        print("Supprimées : %s" % ", ".join(resultat["supprimees"]))
+        return 0
+
+    if getattr(args, "mathlib_version", False):
+        from .toolchain import mathlib as _ml
+        v = _ml.version_installee()
+        if v:
+            print("Mathlib %s (%s)" % (v.get("tag"), v.get("commit", "")[:12]))
+        else:
+            print("Mathlib non installée (phi lean --update-mathlib)")
+        return 0
+
+    if getattr(args, "install_mathlib", False):
+        from .toolchain import mathlib_download as _mld
+        from .toolchain import mathlib as _ml
+        jobs = getattr(args, "jobs", None) or _mld.DEFAUT_JOBS
+        miroir_force = getattr(args, "miroir", None)
+
+        print("=== Téléchargeur Mathlib rapide ===")
+        # 1. Sélection du miroir.
+        if miroir_force:
+            base = miroir_force
+            print("Miroir forcé : %s" % base)
+        else:
+            print("Sélection du miroir le plus rapide…")
+            classes = _mld.selection_miroir()
+            for nom, url, lat in classes:
+                statut = ("%.3fs" % lat) if lat is not None else "injoignable"
+                print("  %s : %s" % (nom, statut))
+            base = _mld.meilleur_miroir()
+            if not base:
+                print("❌ Aucun miroir joignable.")
+                return 1
+            print("Miroir retenu : %s" % base)
+
+        # 2. Liste des fichiers à télécharger.
+        liste_urls = getattr(args, "liste_urls", None)
+        if not liste_urls:
+            print("")
+            print("Le calcul des hashs .ltar requiert l'extension Lean/ complète")
+            print("(phi lean --init --extension lean) puis lake exe cache get.")
+            print("")
+            print("Utilisation :")
+            print("  phi lean --install-mathlib --liste-urls urls.txt")
+            print("    où urls.txt contient une URL par ligne :")
+            print("    https://cache.mathlib.org/mathlib4-master/f/<hash>.ltar")
+            print("")
+            print("Le téléchargeur parallèle est prêt dans")
+            print("phi_complexity/toolchain/mathlib_download.py :")
+            print("  - %d connexions parallèles (max %d)" % (jobs, _mld.MAX_JOBS))
+            print("  - reprise sur interruption (Range)")
+            print("  - vérification SHA256, saut si déjà en cache")
+            return 0
+
+        # 3. Téléchargement parallèle depuis la liste.
+        import os as _os
+        dest_dir = (getattr(args, "dest_mathlib", None)
+                    or _os.path.expanduser("~/.cache/phi-complexity/mathlib"))
+        _os.makedirs(dest_dir, exist_ok=True)
+        with open(liste_urls, "r", encoding="utf-8") as f:
+            urls = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        print("Fichiers à télécharger : %d" % len(urls))
+        fichiers = []
+        for u in urls:
+            nom = u.rstrip("/").split("/")[-1]
+            fichiers.append({"url": u,
+                             "destination": _os.path.join(dest_dir, nom)})
+        total = len(fichiers)
+
+        def _prog(termines, total_f, en_cours):
+            print("  [%d/%d] %s" % (termines, total_f,
+                                    (en_cours or "").split("/")[-1]),
+                  flush=True)
+
+        resultat = _mld.telecharger_lot(fichiers, jobs=jobs,
+                                        progression_globale=_prog)
+        duree = resultat["duree_s"]
+        mo = resultat["octets_totaux"] / 1e6
+        debit = mo / duree if duree > 0 else 0
+        print("")
+        print("Téléchargés : %d, en cache : %d, échecs : %d"
+              % (len(resultat["reussis"]), len(resultat["en_cache"]),
+                 len(resultat["echecs"])))
+        print("Volume : %.1f Mo en %.1f s (%.1f Mo/s)"
+              % (mo, duree, debit))
+        for e in resultat["echecs"][:10]:
+            print("  ❌ %s : %s" % (e["fichier"], e["erreur"]))
+        return 1 if resultat["echecs"] else 0
+
+    if getattr(args, "update_mathlib", False):
+        from .toolchain import mathlib as _ml
+        version_lean = getattr(manager, "version", "4.34.0")
+        try:
+            plan = _ml.plan_mise_a_jour(version_lean)
+        except _ml.CacheExpire as e:
+            print("❌ %s" % e)
+            return 1
+        except (_ml.VersionIntrouvable, _ml.ErreurReseauMathlib) as e:
+            print("❌ %s" % e)
+            return 1
+        taille_go = plan["taille_estimee_octets"] / (1024 ** 3)
+        print("Plan Mathlib : %s (%s)" % (plan["tag"], plan["commit"][:12]))
+        print("  cache précompilé : disponible")
+        print("  taille estimée   : ≥%.1f Go" % taille_go)
+        print("  déjà installée   : %s" % ("oui" if plan["deja_installee"] else "non"))
+        if plan["deja_installee"]:
+            return 0
+        try:
+            _ml.verifier_feu_vert(plan, feu_vert=False)
+        except _ml.TelechargementRefuse as e:
+            print("\n⛔ %s" % e)
+            print("Le téléchargement réel (>100 Mo) attend le feu vert de Tomy.")
+            return 3
+        # Si on arrive ici, le téléchargement est autorisé (petit ou feu vert).
+        print("Téléchargement non implémenté dans cette version "
+              "(extraction .ltar à venir).")
+        return 0
+
+    fichier = getattr(args, "fichier", None)
+    if fichier is None:
+        print("Usage : phi lean [--init [--avec-lake] | --version | --ou] "
+              "[fichier.lean] [--exec] [--timeout N]\n"
+              "        phi lean lake [--help | new <nom> | build | ...] "
+              "(projets lakefile.toml)")
+        return 2
+
+    try:
+        manager.verifier_version_projet(
+            os.path.dirname(os.path.abspath(fichier)))
+    except VersionNonSupportee as e:
+        print("❌ %s" % e)
+        return 1
+    except FormatLeanToolchainInvalide as e:
+        print("❌ lean-toolchain invalide : %s" % e)
+        return 1
+
+    if not manager.est_installee():
+        print("Toolchain Lean absente — installation en cours…")
+        if not _installer_ou_erreur():
+            return 1
+
+    try:
+        if args.exec:
+            resultat = manager.executer(fichier, timeout_s=args.timeout)
+        else:
+            resultat = manager.compiler(fichier, timeout_s=args.timeout)
+    except ToolchainAbsente as e:
+        print("❌ %s" % e)
+        return 1
+    except VersionNonSupportee as e:
+        # Double garde : compiler()/executer() vérifient aussi.
+        print("❌ %s" % e)
+        return 1
+    if resultat.get("stdout"):
+        print(resultat["stdout"], end="")
+    if resultat.get("stderr"):
+        print(resultat["stderr"], end="", file=sys.stderr)
+    return 0 if resultat.get("ok") else 1
+
+
+# ────────────────────────────────────────────────────────
+# EXÉCUTEURS MANQUANTS (réparation 2026-10-08 — câblage CLI)
+# Ces 4 commandes étaient déclarées au parseur mais sans exécuteur
+# (NameError à l'invocation). Réparé : câblage minimal vers les modules.
+# ────────────────────────────────────────────────────────
+
+def _executer_radar(args: argparse.Namespace) -> int:
+    """Exécute 'radar' : compare deux états structurels (faits uniquement).
+
+    Lecture seule. Les observations sont descriptives (garde
+    non-prescriptive) ; le tri reste humain.
+    """
+    from . import radar
+    import json
+    try:
+        avant = radar.scanner(args.avant)
+        apres = radar.scanner(args.apres)
+    except Exception as e:
+        print(f"❌ Erreur lors du scan : {e}")
+        return 1
+    kwargs = {}
+    if getattr(args, "inclure_hors_chaine", False):
+        kwargs["exclure_doublons"] = ()
+    observations = radar.comparer(avant, apres, **kwargs)
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(radar.vers_dict(observations),
+                         ensure_ascii=False, indent=2))
+    else:
+        print(radar.formater_console(observations))
+    return 0
+
+
+def _executer_sismique(args: argparse.Namespace) -> int:
+    """Exécute 'sismique' : mémoire des rythmes via l'historique git.
+
+    Lecture seule. Décrit (magnitude, profondeur, épicentre), ne juge pas.
+    """
+    from . import sismique
+    import json
+    try:
+        resultat = sismique.analyser(args.depot, args.depuis)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    except Exception as e:
+        print(f"❌ Erreur lors de l'analyse sismique : {e}")
+        return 1
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(resultat, ensure_ascii=False, indent=2))
+    else:
+        print(sismique.formater_console(resultat))
+    return 0
+
+
+def _executer_consigner(args: argparse.Namespace) -> int:
+    """Exécute 'consigner' : consigne une décision humaine de veto.
+
+    L'instrument consigne (observation → décision + motif + date) ;
+    il ne prédit ni ne recommande aucun veto.
+    """
+    from . import registre_observations
+    observation = {
+        "kind": args.kind,
+        "fichier": args.fichier,
+        "ligne": args.ligne,
+        "nom": args.nom,
+    }
+    veto = args.veto == "oui"
+    try:
+        registre_observations.consigner(
+            observation, veto, args.motif, chemin=args.registre)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    print(f"✅ Consigné : veto={'oui' if veto else 'non'} sur {args.nom} "
+          f"({args.fichier}:{args.ligne})")
+    return 0
+
+
+def _executer_registre(args: argparse.Namespace) -> int:
+    """Exécute 'registre' : liste les décisions de veto consignées.
+
+    Lecture seule.
+    """
+    from . import registre_observations
+    try:
+        entrees = registre_observations.lister(chemin=args.registre)
+    except Exception as e:
+        print(f"❌ Erreur lors de la lecture du registre : {e}")
+        return 1
+    if not entrees:
+        print("(registre vide)")
+        return 0
+    for e in entrees:
+        obs = e.get("observation", {})
+        print(f"{e.get('date', '?')}  veto={'oui' if e.get('veto') else 'non'}  "
+              f"{obs.get('kind', '?')} {obs.get('fichier', '?')}:"
+              f"{obs.get('ligne', '?')} {obs.get('nom', '?')}")
+        print(f"    motif : {e.get('motif', '')}")
+    return 0
+
+
+# ────────────────────────────────────────────────────────
+# VIGILANCE (détecteurs absolus — réparation+extension 2026-10-08)
+# ────────────────────────────────────────────────────────
+
+def _executer_vigilance(args):
+    """Exécute 'vigilance' : détecteurs absolus sur un état unique.
+
+    Lecture seule. Signale (hypothèses impossibles, axiomes déclarés,
+    hypothèses inutilisées) ; ne décide jamais. Le tri est humain.
+    """
+    from . import vigilance
+    import json
+    try:
+        fiches, decls = vigilance.scanner_complet(args.cible)
+    except Exception as e:
+        print(f"❌ Erreur lors du scan : {e}")
+        return 1
+    observations = vigilance.detecter_vacuite(fiches, decls)
+    if not getattr(args, "sans_inutilisees", False):
+        observations = observations + vigilance.detecter_hypotheses_inutilisees(
+            fiches, decls)
+    observations.sort(key=lambda o: (-o.saillance, o.nom))
+    axiomes = vigilance.inventaire_axiomes(fiches)
+    if getattr(args, "format", "console") == "json":
+        print(json.dumps(vigilance.vers_dict(observations, axiomes),
+                         ensure_ascii=False, indent=2))
+    else:
+        print(vigilance.formater_console(observations, axiomes))
+    return 0
+
+
 # ────────────────────────────────────────────────────────
 # POINT D'ENTRÉE (hermétique — orchestre uniquement)
 # ────────────────────────────────────────────────────────
@@ -1553,6 +2563,12 @@ def _executer_telemetry(args: argparse.Namespace) -> int:
 def main():
     """Point d'entrée principal. Délègue à des fonctions spécialisées."""
     parser = _construire_parseur()
+    # Sucre syntaxique : `phi lean lake <args>` → `phi lean --lake <args>`.
+    # (Un positionnel REMAINDER après `fichier` avalerait les options
+    # existantes comme `--exec` ; la réécriture pré-parse l'évite.)
+    _argv = sys.argv[1:]
+    if len(_argv) >= 2 and _argv[0] == "lean" and _argv[1] == "lake":
+        sys.argv = [sys.argv[0], "lean", "--lake"] + _argv[2:]
     args = parser.parse_args()
 
     if not args.commande:
@@ -1563,6 +2579,12 @@ def main():
         # L'éditeur accepte tout fichier texte, existant ou à créer :
         # pas de collecte préalable de fichiers supportés.
         sys.exit(_executer_edit(args))
+
+    if args.commande == "compress":
+        sys.exit(_executer_compress(args))
+
+    if args.commande == "decompress":
+        sys.exit(_executer_decompress(args))
 
     if args.commande == "index":
         # La carte travaille sur un dossier (pas une liste de fichiers) :
@@ -1589,6 +2611,10 @@ def main():
     if args.commande == "radar":
         # Le radar compare deux états : court-circuit avant la collecte.
         sys.exit(_executer_radar(args))
+
+    if args.commande == "vigilance":
+        # La vigilance analyse un état unique : court-circuit avant la collecte.
+        sys.exit(_executer_vigilance(args))
 
     if args.commande == "sismique":
         # La sismique lit l'historique git : court-circuit avant la collecte.
@@ -1643,6 +2669,16 @@ def main():
         # La télémétrie lit un JSON d'état, pas des sources :
         # court-circuit avant la collecte de fichiers.
         sys.exit(_executer_telemetry(args))
+
+    if args.commande == "lilith":
+        # Les instruments Lilith travaillent sur un fichier Python ou un
+        # profil --kappas : court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_lilith(args))
+
+    if args.commande == "lean":
+        # La toolchain Lean travaille sur un seul fichier .lean (ou ses
+        # propres options) : court-circuit avant la collecte de fichiers.
+        sys.exit(_executer_lean(args))
 
     fichiers = _collecter_fichiers(args.cible)
     if not fichiers and getattr(args, "lang", None) and os.path.isfile(args.cible):

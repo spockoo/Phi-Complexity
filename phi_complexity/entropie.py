@@ -224,6 +224,26 @@ def _termes_entropie(poids: List[float]) -> List[float]:
     return termes
 
 
+# NOTE PHI-NATIF-A (2026-10-08) — comparaison avec lilith.shannon_norm :
+# shannon_norm(κ) = H(P)/log₂(n) ∈ [0,1] est la version NORMALISÉE de
+# l'entropie de Shannon sur le profil κ (complexités AST), calculée en
+# flottant simple SANS borne d'erreur. On garde ici entropie_certifiee et
+# on ne branche PAS entropie.py sur le module lilith, pour trois raisons :
+#   1. PRÉCISION : la sommation est ici double-double CERTIFIÉE (EFT,
+#      AccumulateurCertifie) et rend (valeur, borne) — shannon_norm est
+#      MOINS précis (aucune borne exhibée), pas plus, pas équivalent.
+#   2. UNITÉS : ce module travaille en bits BRUTS car le télescopage
+#      ΣΔH = H_initial − H_finale (voir entropie_depuis_sonde) exige la
+#      même échelle avant/après ; la normalisation ÷log₂(n) la briserait.
+#   3. ENTRÉES : entropie_certifiee prend des poids arbitraires
+#      (postérieurs de croyances, priors phidéens), tandis que
+#      shannon_norm construit le profil en interne depuis des κ AST —
+#      ce ne sont pas les mêmes objets mesurés.
+# Conclusion : shannon_norm reste l'instrument du domaine Lilith
+# (concentration morphique du code) ; l'entropie certifiée reste la
+# lentille de la Sonde B (resserrement de l'attention). Complémentaires,
+# pas substituables.
+
 def entropie_certifiee(poids: List[float]) -> Tuple[float, float]:
     """H = −Σ w·log₂w en double-double certifié → (valeur, borne).
 

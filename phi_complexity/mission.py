@@ -65,6 +65,11 @@ JUSTIFICATIONS = {
                "des trous à attaquer en premier.",
         "sert": "tous",
     },
+    "cache": {
+        "but": "Cache des résultats de parsing (principe des .olean Lean) : "
+               "ne re-parse une déclaration que si ses octets ont changé.",
+        "sert": "instrument",
+    },
     "carte": {
         "but": "Index des symboles + santé phi en une passe : la matière "
                "première que la veille compare aux références.",
@@ -118,10 +123,25 @@ JUSTIFICATIONS = {
                "de complexité sans les déformer.",
         "sert": "instrument",
     },
+    "impact": {
+        "but": "Analyse d'impact pour code Python : si je change cette "
+               "fonction, qu'est-ce qui casse ?",
+        "sert": "instrument",
+    },
+    "impact_sonde": {
+        "but": "Analyse d'impact native intégrée à phi sonde : quand on "
+               "sonde un mécanisme, calcule automatiquement son cône d'effet.",
+        "sert": "instrument",
+    },
     "langs": {
         "but": "Analyseurs par langage, dont Lean : lire les .lean des "
                "5 sorrys est le cœur du métier de l'instrument.",
         "sert": "tous",
+    },
+    "lilith": {
+        "but": "Instruments de mesure Lilith : l'entropie qui dissout le "
+               "doute par la clarté — les audits qui signalent.",
+        "sert": "instrument",
     },
     "metriques": {
         "but": "Indice de radiance et métriques : mesurer sans juger, "
@@ -158,6 +178,11 @@ JUSTIFICATIONS = {
                "quelle complexité vers la décharge.",
         "sert": "tous",
     },
+    "portable": {
+        "but": "Format PHIAST portable (.phiast / .zz) : lire, archiver et "
+               "analyser des AST sans recompiler.",
+        "sert": "instrument",
+    },
     "radar": {
         "but": "Témoin : vue du mouvement structurel entre deux états "
                "(énoncé vs preuve, doublons, sorrys, axiomes) — ordonne "
@@ -185,6 +210,16 @@ JUSTIFICATIONS = {
                "vocabulaire des situations, jamais la décision.",
         "sert": "tous",
     },
+    "sched": {
+        "but": "Ordonnanceur quasicristallin pour granularité fine : "
+               "l'ordonnancement apériodique sturmien bat le prototype.",
+        "sert": "instrument",
+    },
+    "scipy_mini": {
+        "but": "Bibliothèque scientifique maison (stdlib + numpy, zéro "
+               "autre dépendance) : ne réinvente que ce qui bat scipy.",
+        "sert": "instrument",
+    },
     "sismique": {
         "but": "Témoin : mémoire des rythmes via l'historique git "
                "(fréquence, profondeur, mécanisme, répliques) — le "
@@ -201,6 +236,12 @@ JUSTIFICATIONS = {
         "but": "Moniteur de régression structurelle : détecte toute "
                "dégradation silencieuse autour des 5 sorrys (STABLE / "
                "DÉGRADATION DÉTECTÉE / INSTRUMENT DÉGRADÉ).",
+        "sert": "tous",
+    },
+    "vigilance": {
+        "but": "Détecteurs ABSOLUS (état unique) pour le GPS mathématique : "
+               "vacuité syntaxique, inventaire d'axiomes, hypothèses "
+               "inutilisées. Complément du radar (qui est différentiel).",
         "sert": "tous",
     },
     "dependances": {
@@ -251,6 +292,12 @@ JUSTIFICATIONS = {
         "but": "Lecture de la télémétrie de l'exporteur Lean : expose "
                "l'état interne (déclaration en cours, tables, dedup) pour "
                "diagnostiquer les blocages sans deviner.",
+        "sert": "instrument",
+    },
+    "toolchain": {
+        "but": "Gestion décentralisée de la toolchain Lean miniaturisée : "
+               "téléchargement à la demande depuis les releases officielles, "
+               "SHA256 épinglé, extraction sélective.",
         "sert": "instrument",
     },
 }
