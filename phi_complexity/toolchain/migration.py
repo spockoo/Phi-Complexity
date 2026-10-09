@@ -16,7 +16,6 @@ dans le même cache :
 Conventions :
 - statuts typés : exceptions typées et dicts de statut, jamais de
   booléen nu ;
-- travail local uniquement, jamais de push (règle Tomy) ;
 - aucun téléchargement sans SHA256 épinglé dans le registre
   (``VersionInconnue``) et aucun téléchargement >100 Mo sans confirmation
   explicite (``TelechargementRefuse``, gouvernance Mathlib).

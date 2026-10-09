@@ -1,7 +1,4 @@
-"""lilith — instruments de mesure Lilith pour phi-complexity (local uniquement).
-
-Intégré depuis Metaprogramme-lean (RUCHE-LILITH-INSTRUMENTS), jamais poussé
-sur le dépôt public sans ordre explicite de Tomy.
+"""lilith — instruments de mesure pour phi-complexity.
 
 Modules :
 - distributionnel : les 6 métriques (var_relative, kl_divergence, d_infini,

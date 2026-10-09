@@ -1,8 +1,5 @@
 """portable — format PHIAST portable (.phiast / .zz).
 
-Intégré depuis Metaprogramme-lean (RUCHE-PHI-PORTABLE, RUCHE-H3-OPTIMISATION),
-local uniquement.
-
 Modules :
 - lecteur_phiast : lecteur du format .phiast v2 (mmap, statuts typés)
 - lecteur_zz : LecteurZZ — lecture lazy du .zz compressé (15 chunks zlib-9),

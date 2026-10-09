@@ -1,6 +1,5 @@
 """impact — analyse d'impact intelligente pour code Python.
 
-Intégré depuis Metaprogramme-lean (RUCHE-IMPACT-ANALYSIS), local uniquement.
 Répond à : "si je change cette fonction, qu'est-ce qui casse ?"
 
 Modules :

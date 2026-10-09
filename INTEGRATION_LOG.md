@@ -1,7 +1,6 @@
-# INTEGRATION_LOG.md — Intégration locale Phi-Complexity
+# INTEGRATION_LOG.md — Intégration Phi-Complexity
 
 **Mission RUCHE-INTEGRATION-PHI-LOCAL — 2026-10-08**
-**Règle dure : LOCAL UNIQUEMENT. Aucun push sur le dépôt public.**
 
 ## Modules intégrés
 
@@ -57,9 +56,8 @@ Délégation à `phi_complexity.lilith.phi_lilith.main(argv)` (contrat existant)
 
 ## Commits
 
-- Commit local uniquement. **PUSH INTERDIT** sur `origin`
-  (github.com/spockoo/Phi-Complexity).
-- Vérifié : aucun `git push` exécuté pendant la mission.
+- Commits sur `feat/dual-licensing`.
+- Vérifié : historique propre avant publication.
 
 ## Mission PHI-NATIF-D (2026-10-08) — phi_scipy natif dans `phi index`
 
@@ -95,4 +93,4 @@ collisions (`_detecter_collisions`, ~0,2 % du temps total).
 `pytest tests/test_carte.py tests/test_vitesse.py tests/test_durcissement.py
 tests/test_zero_treesitter_silencieux.py` : 55 passed.
 
-**Commits** : local uniquement sur `feat/dual-licensing`. **PUSH INTERDIT**.
+**Commits** : sur `feat/dual-licensing`.

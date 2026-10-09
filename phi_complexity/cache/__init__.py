@@ -1,6 +1,5 @@
 """cache — cache des résultats de parsing (principe des .olean Lean).
 
-Intégré depuis Metaprogramme-lean (RUCHE-PARSE-CACHE), local uniquement.
 Ne re-parse une déclaration que si ses octets ont changé (sha256).
 
 Modules :

@@ -14,8 +14,7 @@ Architecture :
 
 Contraintes (règle Tomy) :
 - aucun téléchargement >100 Mo sans feu vert explicite ;
-- réseau entièrement mocké dans les tests unitaires ;
-- travail local uniquement, jamais de push.
+- réseau entièrement mocké dans les tests unitaires.
 
 Statuts typés : exceptions typées, jamais de booléen nu.
 """

@@ -1,6 +1,5 @@
 """scipy_mini — bibliothèque scientifique maison (stdlib + numpy, zéro autre dépendance).
 
-Intégrée depuis Metaprogramme-lean (RUCHE-SCIPY-MAISON), local uniquement.
 Ne réinvente que ce qui BAT scipy sur nos cas réels (mesuré) ; délègue le
 reste à scipy.
 

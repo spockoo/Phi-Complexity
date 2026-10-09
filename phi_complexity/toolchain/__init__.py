@@ -7,8 +7,7 @@ que le sous-ensemble minimal (spec TOOLCHAIN_MINI_SPEC.md), puis valide.
 
 Contraintes :
 - stdlib + zstandard uniquement (pas de dépendance réseau exotique) ;
-- aucun téléchargement pendant les tests unitaires (mocker `telecharger`) ;
-- travail local uniquement, jamais de push (règle Tomy).
+- aucun téléchargement pendant les tests unitaires (mocker `telecharger`).
 
 Options :
 - `installer(avec_natif=True)` : kit natif leanc (+575 Mo).

@@ -1,6 +1,5 @@
 """sched — ordonnanceur quasicristallin pour granularité fine.
 
-Intégré depuis Metaprogramme-lean (RUCHE-QUASICRISTAL-GRANULARITE), local uniquement.
 L'ordonnancement apériodique sturmien bat le prototype naïf (1,75-1,86× vs 1,47×)
 là où le multiprocessing classique échouait (1,08×).
 
